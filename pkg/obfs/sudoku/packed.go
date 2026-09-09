@@ -49,9 +49,6 @@ type PackedConn struct {
 	recording  atomic.Bool
 	recordLock sync.Mutex
 
-	// Read buffer
-	pendingData pendingBuffer // Decoded bytes not yet consumed by Read
-
 	// Write buffer and state
 	writeMu  sync.Mutex
 	writeBuf []byte
@@ -234,15 +231,13 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 	pc.writeMu.Lock()
 	defer pc.writeMu.Unlock()
 
-	// Pre-allocate memory to avoid repeated append expansions.
-	needed := len(p)*3/2 + 32
-	if pc.paddingThreshold == 0 {
-		needed = ((len(p)+2)/3)*4 + 32
-	}
+	// Bound storage independently of the caller's Write size, including padding.
+	needed := min(min(len(p), maxEncodedWriteSize)*3+64, maxEncodedWriteSize)
 	if cap(pc.writeBuf) < needed {
 		pc.writeBuf = make([]byte, 0, needed)
 	}
 	out := pc.writeBuf[:0]
+	defer func() { pc.writeBuf = out[:0] }()
 	layout := pc.table.layout
 	rng := pc.rng
 	paddingThreshold := pc.paddingThreshold
@@ -273,8 +268,25 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 	// Encode complete blocks in one batch. Prefix and tail handling retain the
 	// same random draws and framing as the original per-group encoder.
 	end := i + (n-i)/3*3
-	out = appendPackedBlocks(out, p[i:end], layout, rng, paddingThreshold, padPool)
-	i = end
+	blockSize := 4
+	if paddingThreshold != 0 {
+		blockSize = 8
+	}
+	written := 0
+	for i < end {
+		// Reserve room for the final two bytes, residual marker and trailing pad.
+		count := min((cap(out)-len(out)-8)/blockSize*3, end-i)
+		if count == 0 {
+			if err := writeEncoded(pc.Conn, out); err != nil {
+				return written, err
+			}
+			written = i
+			out = out[:0]
+			continue
+		}
+		out = appendPackedBlocks(out, p[i:i+count], layout, rng, paddingThreshold, padPool)
+		i += count
+	}
 
 	// Handle the remaining 1 or 2 bytes.
 	for ; i < n; i++ {
@@ -305,8 +317,10 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 	// Possibly append trailing padding
 	out = maybeAppendPackedPadding(out, rng, paddingThreshold, padPool)
 
-	pc.writeBuf = out[:0]
-	return len(p), writeEncoded(pc.Conn, out)
+	if err := writeEncoded(pc.Conn, out); err != nil {
+		return written, err
+	}
+	return len(p), nil
 }
 
 // Flush writes any residual bits left by partial writes.
@@ -351,78 +365,20 @@ func (pc *PackedConn) Read(p []byte) (int, error) {
 		pc.reader = bufio.NewReaderSize(pc.Conn, PackedIOBufferSize)
 	}
 
-	// 1. Return pending decoded data first
-	if n, ok := drainPending(p, &pc.pendingData); ok {
-		return n, nil
-	}
-
-	// 2. Keep reading until data is decoded or an error occurs
 	outN := 0
 	for {
-		chunk, rErr := readBufferedChunk(pc.reader, packedReadSize(len(p)-outN, PackedDecodeBufferSize))
+		chunk, rErr := peekBufferedChunk(pc.reader)
 		if len(chunk) > 0 {
+			var consumed int
+			outN, consumed, rErr = pc.decode(p, chunk)
 			if pc.recording.Load() {
 				pc.recordLock.Lock()
 				if pc.recording.Load() && pc.recorder != nil {
-					pc.recorder.Write(chunk)
+					pc.recorder.Write(chunk[:consumed])
 				}
 				pc.recordLock.Unlock()
 			}
-
-			// Cache frequently accessed variables
-			rBuf := pc.readBitBuf
-			rBits := pc.readBits
-			padMarker := pc.padMarker
-			layout := pc.table.layout
-
-			for i := 0; i < len(chunk); {
-				if rBits == 0 && outN+3 <= len(p) && i+3 < len(chunk) &&
-					layout.hintTable[chunk[i]] && layout.hintTable[chunk[i+1]] &&
-					layout.hintTable[chunk[i+2]] && layout.hintTable[chunk[i+3]] {
-					g1 := layout.decodeGroup[chunk[i]]
-					g2 := layout.decodeGroup[chunk[i+1]]
-					g3 := layout.decodeGroup[chunk[i+2]]
-					g4 := layout.decodeGroup[chunk[i+3]]
-					p[outN] = (g1 << 2) | (g2 >> 4)
-					p[outN+1] = (g2 << 4) | (g3 >> 2)
-					p[outN+2] = (g3 << 6) | g4
-					outN += 3
-					i += 4
-					continue
-				}
-
-				b := chunk[i]
-				i++
-				if !layout.hintTable[b] {
-					if b == padMarker {
-						rBuf = 0
-						rBits = 0
-					}
-					continue
-				}
-
-				group, ok := layout.decodePackedGroup(b)
-				if !ok {
-					return 0, ErrInvalidSudokuMapMiss
-				}
-
-				rBuf = (rBuf << 6) | uint64(group)
-				rBits += 6
-
-				if rBits >= 8 {
-					rBits -= 8
-					val := byte(rBuf >> rBits)
-					outN = appendDecodedByte(p, outN, &pc.pendingData, val)
-					if rBits == 0 {
-						rBuf = 0
-					} else {
-						rBuf &= (uint64(1) << rBits) - 1
-					}
-				}
-			}
-
-			pc.readBitBuf = rBuf
-			pc.readBits = rBits
+			_, _ = pc.reader.Discard(consumed)
 		}
 
 		if rErr != nil {
@@ -442,19 +398,4 @@ func (pc *PackedConn) Read(p []byte) (int, error) {
 // getPaddingByte picks a random padding byte from the pool.
 func (pc *PackedConn) getPaddingByte() byte {
 	return pc.padPool[pc.rng.Intn(len(pc.padPool))]
-}
-
-func packedReadSize(decodedRemaining, maxRaw int) int {
-	if maxRaw <= minDecodeReadSize || decodedRemaining <= 0 {
-		return maxRaw
-	}
-	if decodedRemaining > (maxRaw-minDecodeReadSize)/2 {
-		return maxRaw
-	}
-
-	// Packed mode emits 4 wire hint bytes per 3 payload bytes, with optional
-	// padding and a protected prefix. Avoid decoding an entire 64 KiB raw buffer
-	// when the caller only needs an AEAD length/header-sized read.
-	need := decodedRemaining*2 + minDecodeReadSize
-	return need
 }

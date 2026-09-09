@@ -73,16 +73,21 @@ func PipeConn(a, b net.Conn) {
 }
 
 func copyOneWay(dst io.Writer, src io.Reader) {
+	_, _ = Copy(dst, src)
+}
+
+// Copy preserves io.Copy's optional transfer methods and borrows a relay buffer
+// only when neither endpoint provides one. Wrappers can use it without hiding
+// their underlying connection's optimized path.
+func Copy(dst io.Writer, src io.Reader) (int64, error) {
 	// Avoid borrowing a relay buffer when io.Copy can transfer directly.
 	if writer, ok := src.(io.WriterTo); ok {
-		_, _ = writer.WriteTo(dst)
-		return
+		return writer.WriteTo(dst)
 	}
 	if reader, ok := dst.(io.ReaderFrom); ok {
-		_, _ = reader.ReadFrom(src)
-		return
+		return reader.ReadFrom(src)
 	}
 	buf := pipeBufPool.Get().(*[PipeBufferSize]byte)
 	defer pipeBufPool.Put(buf)
-	_, _ = io.CopyBuffer(dst, src, buf[:])
+	return io.CopyBuffer(dst, src, buf[:])
 }

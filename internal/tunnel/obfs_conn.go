@@ -50,6 +50,13 @@ type connWithObfsMeta struct {
 	uplinkPacked bool
 }
 
+func (c *connWithObfsMeta) WriteTo(w io.Writer) (int64, error) {
+	if c == nil || c.Conn == nil {
+		return 0, net.ErrClosed
+	}
+	return connutil.Copy(w, c.Conn)
+}
+
 func (c *connWithObfsMeta) WriteBuffers(buffers net.Buffers) (int64, error) {
 	if c == nil || c.Conn == nil {
 		return 0, net.ErrClosed

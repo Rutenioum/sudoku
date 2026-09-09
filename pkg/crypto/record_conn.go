@@ -430,6 +430,12 @@ func (c *RecordConn) Read(p []byte) (int, error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
 
+	return c.readLocked(p)
+}
+
+// readLocked keeps a record in readFrame when p is too small (including nil).
+// Read and WriteTo share authentication, ordering and key-update handling here.
+func (c *RecordConn) readLocked(p []byte) (int, error) {
 	if c.hasPendingPlainLocked() {
 		return c.drainPlainLocked(p), nil
 	}

@@ -36,8 +36,6 @@ const (
 	PackedDecodeBufferSize = 32 * 1024
 )
 
-const minDecodeReadSize = 64
-
 var perm4 = [24][4]byte{
 	{0, 1, 2, 3},
 	{0, 1, 3, 2},
@@ -73,11 +71,10 @@ type Conn struct {
 	recording  atomic.Bool
 	recordLock sync.Mutex
 
-	pendingData pendingBuffer
-	hintBuf     [4]byte
-	hintCount   int
-	writeMu     sync.Mutex
-	writeBuf    []byte
+	hintBuf   [4]byte
+	hintCount int
+	writeMu   sync.Mutex
+	writeBuf  []byte
 
 	rng              *sudokuRand
 	paddingThreshold uint64
@@ -161,8 +158,8 @@ func (sc *Conn) Write(p []byte) (n int, err error) {
 	sc.writeMu.Lock()
 	defer sc.writeMu.Unlock()
 
-	sc.writeBuf = encodeSudokuPayload(sc.writeBuf[:0], sc.table, sc.rng, sc.paddingThreshold, p)
-	return len(p), writeEncoded(sc.Conn, sc.writeBuf)
+	sc.writeBuf, n, err = writeSudokuPayload(sc.Conn, sc.writeBuf, sc.table, sc.rng, sc.paddingThreshold, p)
+	return n, err
 }
 
 func (sc *Conn) Read(p []byte) (n int, err error) {
@@ -176,59 +173,21 @@ func (sc *Conn) Read(p []byte) (n int, err error) {
 		// Directional connections also construct write-only codecs.
 		sc.reader = bufio.NewReaderSize(sc.Conn, IOBufferSize)
 	}
-	if n, ok := drainPending(p, &sc.pendingData); ok {
-		return n, nil
-	}
 
 	outN := 0
 	for {
-		chunk, rErr := readBufferedChunk(sc.reader, sudokuReadSize(len(p)-outN, IOBufferSize))
+		chunk, rErr := peekBufferedChunk(sc.reader)
 		if len(chunk) > 0 {
+			var consumed int
+			outN, consumed, rErr = sc.decode(p, chunk)
 			if sc.recording.Load() {
 				sc.recordLock.Lock()
 				if sc.recording.Load() && sc.recorder != nil {
-					sc.recorder.Write(chunk)
+					sc.recorder.Write(chunk[:consumed])
 				}
 				sc.recordLock.Unlock()
 			}
-
-			table := sc.table
-			layout := table.layout
-			for i := 0; i < len(chunk); {
-				if sc.hintCount == 0 && outN < len(p) && i+3 < len(chunk) &&
-					layout.hintTable[chunk[i]] &&
-					layout.hintTable[chunk[i+1]] &&
-					layout.hintTable[chunk[i+2]] &&
-					layout.hintTable[chunk[i+3]] {
-					val, ok := table.DecodeMap[packHintBytes(chunk[i], chunk[i+1], chunk[i+2], chunk[i+3])]
-					if !ok {
-						return 0, ErrInvalidSudokuMapMiss
-					}
-					p[outN] = val
-					outN++
-					i += 4
-					continue
-				}
-
-				b := chunk[i]
-				i++
-				if !layout.hintTable[b] {
-					continue
-				}
-
-				sc.hintBuf[sc.hintCount] = b
-				sc.hintCount++
-				if sc.hintCount != 4 {
-					continue
-				}
-
-				val, ok := table.DecodeMap[packHintBytes(sc.hintBuf[0], sc.hintBuf[1], sc.hintBuf[2], sc.hintBuf[3])]
-				if !ok {
-					return 0, ErrInvalidSudokuMapMiss
-				}
-				outN = appendDecodedByte(p, outN, &sc.pendingData, val)
-				sc.hintCount = 0
-			}
+			_, _ = sc.reader.Discard(consumed)
 		}
 
 		if rErr != nil {
@@ -238,19 +197,4 @@ func (sc *Conn) Read(p []byte) (n int, err error) {
 			return outN, nil
 		}
 	}
-}
-
-func sudokuReadSize(decodedRemaining, maxRaw int) int {
-	if maxRaw <= minDecodeReadSize || decodedRemaining <= 0 {
-		return maxRaw
-	}
-	if decodedRemaining > (maxRaw-minDecodeReadSize)/5 {
-		return maxRaw
-	}
-
-	// Classic Sudoku emits four hint bytes per payload byte plus optional padding.
-	// Keep small Read calls small so AEAD frame headers do not force us to decode
-	// a full socket buffer into pendingData.
-	need := decodedRemaining*5 + minDecodeReadSize
-	return need
 }
