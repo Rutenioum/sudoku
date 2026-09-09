@@ -38,7 +38,7 @@ const (
 //
 // It encodes ciphertext bits into 6-bit groups, then maps them to Sudoku "hint" bytes with optional padding
 // to keep the traffic profile consistent with the classic Sudoku codec:
-//   - Write: batch 12 bytes -> 16 groups (fast path), with the same padding probability model as Conn
+//   - Write: batch complete 3-byte blocks into 4 groups, with the same padding probability model as Conn
 //   - Read: decode groups back to bytes, avoiding slice aliasing leaks
 type PackedConn struct {
 	net.Conn
@@ -50,7 +50,6 @@ type PackedConn struct {
 	recordLock sync.Mutex
 
 	// Read buffer
-	rawBuf      []byte
 	pendingData pendingBuffer // Decoded bytes not yet consumed by Read
 
 	// Write buffer and state
@@ -94,16 +93,13 @@ func NewPackedConnWithRecord(c net.Conn, table *Table, pMin, pMax int, record bo
 	pc := &PackedConn{
 		Conn:             c,
 		table:            table,
-		reader:           bufio.NewReaderSize(c, PackedIOBufferSize),
-		rawBuf:           make([]byte, PackedDecodeBufferSize),
-		pendingData:      newPendingBuffer(4096),
-		writeBuf:         make([]byte, 0, 4096),
 		rng:              localRng,
 		paddingThreshold: pickPaddingThreshold(localRng, pMin, pMax),
 	}
 
 	if table != nil && table.layout != nil {
 		pc.padMarker = table.layout.padMarker
+		pc.padPool = make([]byte, 0, len(table.PaddingPool))
 		for _, b := range table.PaddingPool {
 			if b != pc.padMarker {
 				pc.padPool = append(pc.padPool, b)
@@ -238,7 +234,7 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 	pc.writeMu.Lock()
 	defer pc.writeMu.Unlock()
 
-	// 1. Pre-allocate memory to avoid repeated append expansions.
+	// Pre-allocate memory to avoid repeated append expansions.
 	needed := len(p)*3/2 + 32
 	if pc.paddingThreshold == 0 {
 		needed = ((len(p)+2)/3)*4 + 32
@@ -252,16 +248,10 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 	paddingThreshold := pc.paddingThreshold
 	padPool := pc.padPool
 
-	prefixN := 0
-	out, prefixN = pc.writeProtectedPrefix(out, p)
-
-	i := 0
+	out, i := pc.writeProtectedPrefix(out, p)
 	n := len(p)
-	if prefixN > 0 {
-		i = prefixN
-	}
 
-	// 2. Header alignment (Slow Path)
+	// Align the protected prefix to a complete group boundary.
 	for pc.bitCount > 0 && i < n {
 		out = maybeAppendPackedPadding(out, rng, paddingThreshold, padPool)
 		b := p[i]
@@ -280,42 +270,13 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 		}
 	}
 
-	// 3. Unroll four 3-byte blocks. This is measurably faster with the default
-	// padding range than a single 3-byte loop.
-	for i+11 < n {
-		for range 4 {
-			b1, b2, b3 := p[i], p[i+1], p[i+2]
-			i += 3
+	// Encode complete blocks in one batch. Prefix and tail handling retain the
+	// same random draws and framing as the original per-group encoder.
+	end := i + (n-i)/3*3
+	out = appendPackedBlocks(out, p[i:end], layout, rng, paddingThreshold, padPool)
+	i = end
 
-			g1 := (b1 >> 2) & 0x3F
-			g2 := ((b1 & 0x03) << 4) | ((b2 >> 4) & 0x0F)
-			g3 := ((b2 & 0x0F) << 2) | ((b3 >> 6) & 0x03)
-			g4 := b3 & 0x3F
-
-			out = appendPackedGroup(out, layout, rng, paddingThreshold, padPool, g1)
-			out = appendPackedGroup(out, layout, rng, paddingThreshold, padPool, g2)
-			out = appendPackedGroup(out, layout, rng, paddingThreshold, padPool, g3)
-			out = appendPackedGroup(out, layout, rng, paddingThreshold, padPool, g4)
-		}
-	}
-
-	// 4. Process remaining complete 3-byte blocks.
-	for i+2 < n {
-		b1, b2, b3 := p[i], p[i+1], p[i+2]
-		i += 3
-
-		g1 := (b1 >> 2) & 0x3F
-		g2 := ((b1 & 0x03) << 4) | ((b2 >> 4) & 0x0F)
-		g3 := ((b2 & 0x0F) << 2) | ((b3 >> 6) & 0x03)
-		g4 := b3 & 0x3F
-
-		out = appendPackedGroup(out, layout, rng, paddingThreshold, padPool, g1)
-		out = appendPackedGroup(out, layout, rng, paddingThreshold, padPool, g2)
-		out = appendPackedGroup(out, layout, rng, paddingThreshold, padPool, g3)
-		out = appendPackedGroup(out, layout, rng, paddingThreshold, padPool, g4)
-	}
-
-	// 5. Tail processing — handle the remaining 1 or 2 bytes.
+	// Handle the remaining 1 or 2 bytes.
 	for ; i < n; i++ {
 		b := p[i]
 		pc.bitBuf = (pc.bitBuf << 8) | uint64(b)
@@ -332,7 +293,7 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 		}
 	}
 
-	// 6. Flush residual bits.
+	// Flush residual bits.
 	if pc.bitCount > 0 {
 		group := byte(pc.bitBuf << (6 - pc.bitCount))
 		pc.bitBuf = 0
@@ -344,13 +305,8 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 	// Possibly append trailing padding
 	out = maybeAppendPackedPadding(out, rng, paddingThreshold, padPool)
 
-	// Send data
-	if len(out) > 0 {
-		pc.writeBuf = out[:0]
-		return len(p), connutil.WriteFull(pc.Conn, out)
-	}
 	pc.writeBuf = out[:0]
-	return len(p), nil
+	return len(p), writeEncoded(pc.Conn, out)
 }
 
 // Flush writes any residual bits left by partial writes.
@@ -377,7 +333,7 @@ func (pc *PackedConn) Flush() error {
 
 	if len(out) > 0 {
 		pc.writeBuf = out[:0]
-		return connutil.WriteFull(pc.Conn, out)
+		return writeEncoded(pc.Conn, out)
 	}
 	return nil
 }
@@ -387,8 +343,12 @@ func (pc *PackedConn) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if pc == nil || pc.Conn == nil || pc.reader == nil || len(pc.rawBuf) == 0 || pc.table == nil || pc.table.layout == nil {
+	if pc == nil || pc.Conn == nil || pc.table == nil || pc.table.layout == nil {
 		return 0, io.ErrClosedPipe
+	}
+
+	if pc.reader == nil {
+		pc.reader = bufio.NewReaderSize(pc.Conn, PackedIOBufferSize)
 	}
 
 	// 1. Return pending decoded data first
@@ -399,12 +359,12 @@ func (pc *PackedConn) Read(p []byte) (int, error) {
 	// 2. Keep reading until data is decoded or an error occurs
 	outN := 0
 	for {
-		nr, rErr := pc.reader.Read(pc.rawBuf[:packedReadSize(len(p)-outN, len(pc.rawBuf))])
-		if nr > 0 {
+		chunk, rErr := readBufferedChunk(pc.reader, packedReadSize(len(p)-outN, PackedDecodeBufferSize))
+		if len(chunk) > 0 {
 			if pc.recording.Load() {
 				pc.recordLock.Lock()
 				if pc.recording.Load() && pc.recorder != nil {
-					pc.recorder.Write(pc.rawBuf[:nr])
+					pc.recorder.Write(chunk)
 				}
 				pc.recordLock.Unlock()
 			}
@@ -415,7 +375,6 @@ func (pc *PackedConn) Read(p []byte) (int, error) {
 			padMarker := pc.padMarker
 			layout := pc.table.layout
 
-			chunk := pc.rawBuf[:nr]
 			for i := 0; i < len(chunk); {
 				if rBits == 0 && outN+3 <= len(p) && i+3 < len(chunk) &&
 					layout.hintTable[chunk[i]] && layout.hintTable[chunk[i+1]] &&
@@ -470,12 +429,6 @@ func (pc *PackedConn) Read(p []byte) (int, error) {
 			if rErr == io.EOF {
 				pc.readBitBuf = 0
 				pc.readBits = 0
-			}
-			if outN > 0 {
-				return outN, nil
-			}
-			if n, ok := drainPending(p, &pc.pendingData); ok {
-				return n, nil
 			}
 			return 0, rErr
 		}

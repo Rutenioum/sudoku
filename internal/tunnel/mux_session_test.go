@@ -126,12 +126,12 @@ func TestMuxStream_EnqueueRejectsOverflow(t *testing.T) {
 	payload := make([]byte, muxMaxDataPayload)
 
 	for queued := 0; queued < muxMaxQueuedBytesPerStream; queued += len(payload) {
-		if err := st.enqueue(payload); err != nil {
+		if err := st.enqueue(&muxChunk{data: payload}); err != nil {
 			t.Fatalf("enqueue within limit: %v", err)
 		}
 	}
 
-	if err := st.enqueue(payload); !errors.Is(err, errMuxReceiveQueueFull) {
+	if err := st.enqueue(&muxChunk{data: payload}); !errors.Is(err, errMuxReceiveQueueFull) {
 		t.Fatalf("enqueue overflow error = %v, want %v", err, errMuxReceiveQueueFull)
 	}
 
@@ -139,7 +139,7 @@ func TestMuxStream_EnqueueRejectsOverflow(t *testing.T) {
 	if _, err := io.ReadFull(st, buf); err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if err := st.enqueue(payload); err != nil {
+	if err := st.enqueue(&muxChunk{data: payload}); err != nil {
 		t.Fatalf("enqueue after consuming capacity: %v", err)
 	}
 }
@@ -149,13 +149,13 @@ func TestMuxStream_EnqueueAfterCloseDoesNotBlock(t *testing.T) {
 	payload := make([]byte, muxMaxDataPayload)
 
 	for queued := 0; queued < muxMaxQueuedBytesPerStream; queued += len(payload) {
-		if err := st.enqueue(payload); err != nil {
+		if err := st.enqueue(&muxChunk{data: payload}); err != nil {
 			t.Fatalf("enqueue within limit: %v", err)
 		}
 	}
 
 	st.closeNoSend(io.ErrClosedPipe)
-	if err := st.enqueue(payload); err != nil {
+	if err := st.enqueue(&muxChunk{data: payload}); err != nil {
 		t.Fatalf("enqueue after close: %v", err)
 	}
 }

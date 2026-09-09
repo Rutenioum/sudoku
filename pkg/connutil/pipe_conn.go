@@ -31,7 +31,7 @@ const PipeBufferSize = 63 * 1024
 
 var pipeBufPool = sync.Pool{
 	New: func() any {
-		return make([]byte, PipeBufferSize)
+		return new([PipeBufferSize]byte)
 	},
 }
 
@@ -73,7 +73,16 @@ func PipeConn(a, b net.Conn) {
 }
 
 func copyOneWay(dst io.Writer, src io.Reader) {
-	buf := pipeBufPool.Get().([]byte)
+	// Avoid borrowing a relay buffer when io.Copy can transfer directly.
+	if writer, ok := src.(io.WriterTo); ok {
+		_, _ = writer.WriteTo(dst)
+		return
+	}
+	if reader, ok := dst.(io.ReaderFrom); ok {
+		_, _ = reader.ReadFrom(src)
+		return
+	}
+	buf := pipeBufPool.Get().(*[PipeBufferSize]byte)
 	defer pipeBufPool.Put(buf)
-	_, _ = io.CopyBuffer(dst, src, buf)
+	_, _ = io.CopyBuffer(dst, src, buf[:])
 }

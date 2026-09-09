@@ -23,8 +23,6 @@ import (
 	"io"
 	"net"
 	"sync"
-
-	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 )
 
 // DownlinkWriter encodes payload bytes with the selected downlink codec.
@@ -101,7 +99,7 @@ func (w *sudokuDataWriter) Write(p []byte) (int, error) {
 		return 0, io.ErrClosedPipe
 	}
 	w.writeBuf = encodeSudokuPayload(w.writeBuf[:0], w.table, w.rng, w.paddingThreshold, p)
-	return len(p), connutil.WriteFull(w.writer, w.writeBuf)
+	return len(p), writeEncoded(w.writer, w.writeBuf)
 }
 
 func encodeSudokuPayload(dst []byte, table *Table, rng *sudokuRand, paddingThreshold uint64, p []byte) []byte {

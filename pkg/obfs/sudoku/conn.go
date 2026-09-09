@@ -73,7 +73,6 @@ type Conn struct {
 	recording  atomic.Bool
 	recordLock sync.Mutex
 
-	rawBuf      []byte
 	pendingData pendingBuffer
 	hintBuf     [4]byte
 	hintCount   int
@@ -104,10 +103,6 @@ func NewConn(c net.Conn, table *Table, pMin, pMax int, record bool) *Conn {
 	sc := &Conn{
 		Conn:             c,
 		table:            table,
-		reader:           bufio.NewReaderSize(c, IOBufferSize),
-		rawBuf:           make([]byte, IOBufferSize),
-		pendingData:      newPendingBuffer(4096),
-		writeBuf:         make([]byte, 0, 4096),
 		rng:              localRng,
 		paddingThreshold: pickPaddingThreshold(localRng, pMin, pMax),
 	}
@@ -167,15 +162,19 @@ func (sc *Conn) Write(p []byte) (n int, err error) {
 	defer sc.writeMu.Unlock()
 
 	sc.writeBuf = encodeSudokuPayload(sc.writeBuf[:0], sc.table, sc.rng, sc.paddingThreshold, p)
-	return len(p), connutil.WriteFull(sc.Conn, sc.writeBuf)
+	return len(p), writeEncoded(sc.Conn, sc.writeBuf)
 }
 
 func (sc *Conn) Read(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if sc == nil || sc.Conn == nil || sc.reader == nil || len(sc.rawBuf) == 0 || sc.table == nil || sc.table.layout == nil {
+	if sc == nil || sc.Conn == nil || sc.table == nil || sc.table.layout == nil {
 		return 0, io.ErrClosedPipe
+	}
+	if sc.reader == nil {
+		// Directional connections also construct write-only codecs.
+		sc.reader = bufio.NewReaderSize(sc.Conn, IOBufferSize)
 	}
 	if n, ok := drainPending(p, &sc.pendingData); ok {
 		return n, nil
@@ -183,9 +182,8 @@ func (sc *Conn) Read(p []byte) (n int, err error) {
 
 	outN := 0
 	for {
-		nr, rErr := sc.reader.Read(sc.rawBuf[:sudokuReadSize(len(p)-outN, len(sc.rawBuf))])
-		if nr > 0 {
-			chunk := sc.rawBuf[:nr]
+		chunk, rErr := readBufferedChunk(sc.reader, sudokuReadSize(len(p)-outN, IOBufferSize))
+		if len(chunk) > 0 {
 			if sc.recording.Load() {
 				sc.recordLock.Lock()
 				if sc.recording.Load() && sc.recorder != nil {
@@ -234,12 +232,6 @@ func (sc *Conn) Read(p []byte) (n int, err error) {
 		}
 
 		if rErr != nil {
-			if outN > 0 {
-				return outN, nil
-			}
-			if n, ok := drainPending(p, &sc.pendingData); ok {
-				return n, nil
-			}
 			return 0, rErr
 		}
 		if outN > 0 {

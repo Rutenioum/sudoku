@@ -24,10 +24,6 @@ type pendingBuffer struct {
 	off  int
 }
 
-func newPendingBuffer(capacity int) pendingBuffer {
-	return pendingBuffer{data: make([]byte, 0, capacity)}
-}
-
 func (p *pendingBuffer) available() int {
 	if p == nil {
 		return 0
@@ -43,25 +39,8 @@ func (p *pendingBuffer) reset() {
 	p.off = 0
 }
 
-func (p *pendingBuffer) ensureAppendCapacity(extra int) {
-	if p == nil || extra <= 0 {
-		return
-	}
-	if p.off == 0 {
-		return
-	}
-	if cap(p.data)-len(p.data) >= extra {
-		return
-	}
-
-	unread := len(p.data) - p.off
-	copy(p.data[:unread], p.data[p.off:])
-	p.data = p.data[:unread]
-	p.off = 0
-}
-
 func (p *pendingBuffer) appendByte(b byte) {
-	p.ensureAppendCapacity(1)
+	// Decoding resumes only after drainPending has reset the consumed buffer.
 	p.data = append(p.data, b)
 }
 
