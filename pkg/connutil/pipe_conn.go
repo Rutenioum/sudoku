@@ -55,14 +55,14 @@ func PipeConn(a, b net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		copyOneWay(a, b)
+		_, _ = Copy(a, b)
 		_ = TryCloseWrite(a)
 		_ = TryCloseRead(b)
 	}()
 
 	go func() {
 		defer wg.Done()
-		copyOneWay(b, a)
+		_, _ = Copy(b, a)
 		_ = TryCloseWrite(b)
 		_ = TryCloseRead(a)
 	}()
@@ -70,10 +70,6 @@ func PipeConn(a, b net.Conn) {
 	wg.Wait()
 	_ = a.Close()
 	_ = b.Close()
-}
-
-func copyOneWay(dst io.Writer, src io.Reader) {
-	_, _ = Copy(dst, src)
 }
 
 // Copy preserves io.Copy's optional transfer methods and borrows a relay buffer

@@ -47,11 +47,6 @@ const (
 	maxFrameBodySize = 65535
 )
 
-type recordKeys struct {
-	baseSend []byte
-	baseRecv []byte
-}
-
 // RecordConn is a framed AEAD net.Conn with:
 //   - deterministic per-record nonce (epoch+seq)
 //   - per-direction key rotation (epoch), driven by plaintext byte counters
@@ -68,7 +63,8 @@ type RecordConn struct {
 	writeMu sync.Mutex
 	readMu  sync.Mutex
 
-	keys recordKeys
+	baseSend []byte
+	baseRecv []byte
 
 	sendAEAD      cipher.AEAD
 	sendAEADEpoch uint32
@@ -124,8 +120,7 @@ func NewRecordConn(c net.Conn, method string, baseSend, baseRecv []byte) (*Recor
 			return nil, fmt.Errorf("invalid recv base key: %w", err)
 		}
 	}
-	rc := &RecordConn{Conn: c, method: method}
-	rc.keys = recordKeys{baseSend: cloneBytes(baseSend), baseRecv: cloneBytes(baseRecv)}
+	rc := &RecordConn{Conn: c, method: method, baseSend: cloneBytes(baseSend), baseRecv: cloneBytes(baseRecv)}
 	if err := rc.resetTrafficState(); err != nil {
 		return nil, err
 	}
@@ -149,7 +144,8 @@ func (c *RecordConn) Rekey(baseSend, baseRecv []byte) error {
 	defer c.readMu.Unlock()
 	defer c.writeMu.Unlock()
 
-	c.keys = recordKeys{baseSend: cloneBytes(baseSend), baseRecv: cloneBytes(baseRecv)}
+	c.baseSend = cloneBytes(baseSend)
+	c.baseRecv = cloneBytes(baseRecv)
 	if err := c.resetTrafficState(); err != nil {
 		return err
 	}
@@ -179,14 +175,10 @@ func (c *RecordConn) resetTrafficState() error {
 }
 
 func normalizeAEADMethod(method string) string {
-	switch method {
-	case "", "chacha20-poly1305":
+	if method == "" {
 		return "chacha20-poly1305"
-	case "aes-128-gcm", "none":
-		return method
-	default:
-		return method
 	}
+	return method
 }
 
 func validateBaseKey(b []byte) error {
@@ -241,37 +233,37 @@ func randomNonZeroUint64() (uint64, error) {
 	}
 }
 
-func (c *RecordConn) newAEADFor(base []byte, epoch uint32) (cipher.AEAD, int, error) {
+func (c *RecordConn) newAEADFor(base []byte, epoch uint32) (cipher.AEAD, error) {
 	method := c.method
 	if method == "none" {
-		return nil, 0, nil
+		return nil, nil
 	}
 	key := deriveEpochKey(base, epoch, method)
 	switch method {
 	case "aes-128-gcm":
 		block, err := aes.NewCipher(key[:16])
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		a, err := cipher.NewGCM(block)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		if a.NonceSize() != recordHeaderSize {
-			return nil, 0, fmt.Errorf("unexpected gcm nonce size: %d", a.NonceSize())
+			return nil, fmt.Errorf("unexpected gcm nonce size: %d", a.NonceSize())
 		}
-		return a, 16, nil
+		return a, nil
 	case "chacha20-poly1305":
 		a, err := chacha20poly1305.New(key[:32])
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		if a.NonceSize() != recordHeaderSize {
-			return nil, 0, fmt.Errorf("unexpected chacha nonce size: %d", a.NonceSize())
+			return nil, fmt.Errorf("unexpected chacha nonce size: %d", a.NonceSize())
 		}
-		return a, 32, nil
+		return a, nil
 	default:
-		return nil, 0, fmt.Errorf("unsupported cipher: %s", method)
+		return nil, fmt.Errorf("unsupported cipher: %s", method)
 	}
 }
 
@@ -347,7 +339,7 @@ func (c *RecordConn) writeBuffers(buffers net.Buffers) (int64, error) {
 			continue
 		}
 		if c.sendAEAD == nil || c.sendAEADEpoch != c.sendEpoch {
-			a, _, err := c.newAEADFor(c.keys.baseSend, c.sendEpoch)
+			a, err := c.newAEADFor(c.baseSend, c.sendEpoch)
 			if err != nil {
 				return total, err
 			}
@@ -482,7 +474,7 @@ func (c *RecordConn) readLocked(p []byte) (int, error) {
 	}
 
 	if c.recvAEAD == nil || c.recvAEADEpoch != epoch {
-		a, _, err := c.newAEADFor(c.keys.baseRecv, epoch)
+		a, err := c.newAEADFor(c.baseRecv, epoch)
 		if err != nil {
 			return 0, err
 		}

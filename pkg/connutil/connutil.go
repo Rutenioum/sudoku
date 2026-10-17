@@ -60,20 +60,6 @@ func TryCloseWrite(target any) error {
 	return nil
 }
 
-// RunClosers executes closers in order and returns the first error.
-func RunClosers(closers ...func() error) error {
-	var firstErr error
-	for _, fn := range closers {
-		if fn == nil {
-			continue
-		}
-		if err := fn(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
 func AbsInt64(x int64) int64 {
 	if x < 0 {
 		return -x
