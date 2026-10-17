@@ -40,19 +40,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	// LAN IP ranges in uint32 format
-	lanRange1Start = 167772160  // 10.0.0.0
-	lanRange1End   = 184549375  // 10.255.255.255
-	lanRange2Start = 2886729728 // 172.16.0.0
-	lanRange2End   = 2887778303 // 172.31.255.255
-	lanRange3Start = 3232235520 // 192.168.0.0
-	lanRange3End   = 3232301055 // 192.168.255.255
-	lanRange4Start = 2130706432 // 127.0.0.0
-	lanRange4End   = 2147483647 // 127.255.255.255
-
-	ruleCacheDirEnv = "SUDOKU_RULE_CACHE_DIR"
-)
+const ruleCacheDirEnv = "SUDOKU_RULE_CACHE_DIR"
 
 // IPRange represents an IP interval [Start, End]
 type IPRange struct {
@@ -552,7 +540,7 @@ func (m *Manager) match(host string, ip net.IP, includeLocal bool) (bool, Match)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	if includeLocal && m.isLocalNetwork(ip) {
+	if includeLocal && isLocalNetwork(ip) {
 		return true, Match{Kind: "LOCAL"}
 	}
 
@@ -652,23 +640,16 @@ func compareIPv6(a, b [16]byte) int {
 	return bytes.Compare(a[:], b[:])
 }
 
-func (m *Manager) isLocalNetwork(ip net.IP) bool {
+// isLocalNetwork reports loopback, RFC 1918 and (for IPv6) link-local addresses.
+func isLocalNetwork(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
-
 	ip4 := ip.To4()
 	if ip4 == nil {
-		// For IPv6, check if it's loopback or link-local
 		return ip.IsLoopback() || ip.IsLinkLocalUnicast()
 	}
-
-	val := ipToUint32(ip4)
-
-	// Check against common LAN ranges
-	return (val >= lanRange1Start && val <= lanRange1End) || // 10.0.0.0/8
-		(val >= lanRange2Start && val <= lanRange2End) || // 172.16.0.0/12
-		(val >= lanRange3Start && val <= lanRange3End) || // 192.168.0.0/16
-		(val >= lanRange4Start && val <= lanRange4End) || // 127.0.0.0/8
-		ip.IsLoopback()
+	return ip4[0] == 10 || ip4[0] == 127 ||
+		(ip4[0] == 172 && ip4[1]&0xf0 == 16) ||
+		(ip4[0] == 192 && ip4[1] == 168)
 }
