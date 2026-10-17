@@ -90,26 +90,3 @@ func (c *Config) finalizeProxyMode() {
 	}
 	c.ProxyMode = normalizeProxyMode(c.ProxyMode)
 }
-
-func (c *Config) HTTPMaskTunnelEnabled() bool {
-	if c == nil || c.HTTPMask.Disable {
-		return false
-	}
-	switch c.HTTPMask.Mode {
-	case "stream", "poll", "auto", "ws":
-		return true
-	default:
-		return false
-	}
-}
-
-func (c *Config) MultiplexMode() string {
-	if c == nil {
-		return "off"
-	}
-	return firstMultiplexMode(c.HTTPMask.Multiplex, c.Multiplex)
-}
-
-func (c *Config) SessionMuxEnabled() bool {
-	return c.MultiplexMode() == "on"
-}
