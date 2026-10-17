@@ -23,8 +23,9 @@ package rewrite
 
 import "net/http"
 
-// Response rewrites the redirect, cookies and text body of resp for a route mounted at prefix,
-// which must not be the root "/".
+// Response puts prefix back into what the upstream sent for a route mounted at prefix (which must
+// not be the root "/"): redirects (Location: /foo), cookie paths (Path=/) and root-absolute asset
+// URLs in HTML/CSS/SVG/JSON ("/assets/...", url(/assets/...)).
 func Response(resp *http.Response, prefix string) error {
 	rewriteLocation(resp, prefix)
 	rewriteSetCookiePath(resp, prefix)

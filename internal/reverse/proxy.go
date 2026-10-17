@@ -35,6 +35,10 @@ import (
 func newRouteProxy(prefix, target string, stripPrefix bool, hostHeader string, mux *tunnel.MuxClient) *httputil.ReverseProxy {
 	targetURL := &url.URL{Scheme: "http", Host: target}
 	defaultHostHeader := defaultUpstreamHostHeader(target)
+	// A subpath mount hides the prefix from upstream, so responses must get it back.
+	rewritesResponses := stripPrefix && prefix != "/"
+	// Director rather than Rewrite on purpose: Rewrite would drop the client's Forwarded/X-Forwarded-*
+	// headers and sanitise the query string, which changes what existing upstream apps receive.
 	rp := httputil.NewSingleHostReverseProxy(targetURL)
 
 	// Each reverse request uses a fresh mux stream; do not let net/http attempt to keep idle conns.
@@ -69,7 +73,7 @@ func newRouteProxy(prefix, target string, stripPrefix bool, hostHeader string, m
 		if prefix != "/" {
 			req.Header.Set("X-Forwarded-Prefix", prefix)
 		}
-		if stripPrefix && prefix != "/" {
+		if rewritesResponses {
 			// Many web apps gzip/br their HTML/JS/CSS when the client sends Accept-Encoding.
 			// Subpath support requires response rewriting, so force identity encoding upstream.
 			req.Header.Del("Accept-Encoding")
@@ -77,17 +81,13 @@ func newRouteProxy(prefix, target string, stripPrefix bool, hostHeader string, m
 	}
 
 	rp.ModifyResponse = func(resp *http.Response) error {
-		// When we strip the prefix for upstream routing, we need to re-add it for browsers:
-		// - absolute redirects (Location: /foo)
-		// - cookie paths (Path=/)
-		// - root-absolute asset URLs in HTML/CSS/SVG/JSON ("/assets/...", url(/assets/...))
-		if stripPrefix && prefix != "/" {
+		if rewritesResponses {
 			return rewrite.Response(resp, prefix)
 		}
 		return nil
 	}
 
-	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+	rp.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
 		// Avoid leaking internal details; the server logs should carry the rest.
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 	}
