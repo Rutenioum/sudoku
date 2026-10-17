@@ -7,8 +7,8 @@ import (
 )
 
 func TestPackedConn_ProtectedPrefixPadding(t *testing.T) {
-	table := NewTable("packed-prefix-seed", "prefer_ascii")
-	mock := &MockConn{}
+	table := mustTable(t, "packed-prefix-seed", "prefer_ascii")
+	mock := &memConn{}
 	writer := NewPackedConn(mock, table, 0, 0)
 	writer.rng = newSudokuRand(1)
 
@@ -51,7 +51,7 @@ func TestPackedConn_ProtectedPrefixPadding(t *testing.T) {
 		t.Fatalf("prefix still exposes long hint run: %d", maxHintRun)
 	}
 
-	reader := NewPackedConn(&MockConn{readBuf: wire}, table, 0, 0)
+	reader := NewPackedConn(&memConn{readBuf: wire}, table, 0, 0)
 	decoded := make([]byte, len(payload))
 	if _, err := io.ReadFull(reader, decoded); err != nil {
 		t.Fatalf("read back: %v", err)

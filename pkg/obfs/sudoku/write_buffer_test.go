@@ -40,7 +40,7 @@ func TestEncodedWriteBoundariesAndErrors(t *testing.T) {
 }
 
 func TestCodecLargeWriteUsesBoundedBuffer(t *testing.T) {
-	table := NewTable("bounded-write", "prefer_ascii")
+	table := mustTable(t, "bounded-write", "prefer_ascii")
 	payload := bytes.Repeat([]byte("large application writes"), 50000)
 	for _, packed := range []bool{false, true} {
 		for _, padding := range []int{0, 10, 99, 100} {

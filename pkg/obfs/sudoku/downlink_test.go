@@ -97,14 +97,14 @@ func TestServerDownlinkWriter_RoundTrip(t *testing.T) {
 func TestPackedConn_SmallReadDoesNotOverDecode(t *testing.T) {
 	table := mustTable(t, "packed-small-read", "prefer_ascii")
 
-	mock := &MockConn{}
+	mock := &memConn{}
 	writer := NewPackedConn(mock, table, 0, 0)
 	payload := bytes.Repeat([]byte("x"), 63*1024)
 	if _, err := writer.Write(payload); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
-	reader := NewPackedConn(&MockConn{readBuf: mock.writeBuf}, table, 0, 0)
+	reader := NewPackedConn(&memConn{readBuf: mock.writeBuf}, table, 0, 0)
 	header := make([]byte, 2)
 	if _, err := io.ReadFull(reader, header); err != nil {
 		t.Fatalf("small read: %v", err)
