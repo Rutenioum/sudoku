@@ -23,6 +23,7 @@ package httpmask
 
 import (
 	"net"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -42,12 +43,20 @@ func processCPUTime(tb testing.TB) time.Duration {
 	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
 
-// BenchmarkSplitIdleSessions reports the CPU that idle established sessions burn on both ends.
+func liveHeapBytes() uint64 {
+	runtime.GC()
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	return ms.HeapAlloc
+}
+
+// BenchmarkSplitIdleSessions reports the CPU and heap that idle established sessions cost on both ends.
 func BenchmarkSplitIdleSessions(b *testing.B) {
 	for _, mode := range benchModes {
 		b.Run(mode, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				b.StopTimer()
+				heapBefore := liveHeapBytes()
 				addr, tunnels := startBenchServer(b, newBenchServer(mode))
 				var conns []net.Conn
 				for j := 0; j < idleBenchSessions; j++ {
@@ -55,6 +64,7 @@ func BenchmarkSplitIdleSessions(b *testing.B) {
 					conns = append(conns, client, server)
 				}
 				time.Sleep(200 * time.Millisecond) // let dial-time work settle
+				b.ReportMetric(float64(liveHeapBytes()-heapBefore)/idleBenchSessions, "heap-B/session")
 
 				cpuBefore := processCPUTime(b)
 				b.StartTimer()
