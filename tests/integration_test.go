@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"math/bits"
+	"math/rand"
 	"net"
 	"net/http"
 	"sync"
@@ -47,8 +48,10 @@ const (
 )
 
 var (
-	testPortMu   sync.Mutex
-	testPortNext = testPortMin
+	testPortMu sync.Mutex
+	// Each process starts at a random offset so that concurrent `go test` runs rarely probe
+	// the same port at the same moment.
+	testPortNext = testPortMin + rand.Intn(testPortMax-testPortMin+1)
 	testPortUsed = map[int]struct{}{}
 )
 
