@@ -65,13 +65,9 @@ func TestParseRoutes(t *testing.T) {
 }
 
 func TestRegisterSession(t *testing.T) {
-
 	t.Run("argument errors", func(t *testing.T) {
 		mc := newTestMux(t)
 		routes := []config.ReverseRoute{{Path: "/a", Target: "t:1"}}
-		if err := (*Manager)(nil).RegisterSession(mc, routes); err == nil || err.Error() != "nil manager" {
-			t.Errorf("nil manager: %v", err)
-		}
 		if err := NewManager().RegisterSession(nil, routes); err == nil || err.Error() != "nil mux client" {
 			t.Errorf("nil mux: %v", err)
 		}

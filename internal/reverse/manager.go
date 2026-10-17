@@ -88,9 +88,6 @@ func parseRoutes(routes []config.ReverseRoute) []routeSpec {
 //
 // On conflict (same path prefix already registered), it returns an error.
 func (m *Manager) RegisterSession(mux *tunnel.MuxClient, routes []config.ReverseRoute) error {
-	if m == nil {
-		return fmt.Errorf("nil manager")
-	}
 	if mux == nil {
 		return fmt.Errorf("nil mux client")
 	}
