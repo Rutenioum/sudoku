@@ -21,14 +21,10 @@ package app
 
 import (
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
@@ -120,32 +116,9 @@ func RunClientPool(configs []*config.Config, tableSets [][]*sudoku.Table) {
 	logx.Infof("Client", "Client (Mixed) on :%d -> %s | Mode: %s | Rules: %d",
 		primary.Config.LocalPort, strings.Join(nodeLabels, ", "), primary.Config.ProxyMode, len(primary.Config.RuleURLs))
 
-	// Graceful shutdown on SIGINT / SIGTERM.
-	sigCh := make(chan os.Signal, 1)
-	stopCh := make(chan struct{})
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		logx.Infof("Client", "Shutting down...")
-		close(stopCh)
-		_ = l.Close()
-	}()
-
-	for {
-		c, err := l.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			select {
-			case <-stopCh:
-				return
-			default:
-				continue
-			}
-		}
-		go serveMixed(c, primary.Config, routeMgrs, dialer, resolver)
-	}
+	serveUntilShutdown("Client", l, func(c net.Conn) {
+		serveMixed(c, primary.Config, routeMgrs, dialer, resolver)
+	})
 }
 
 func serveMixed(c net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {

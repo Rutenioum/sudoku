@@ -23,10 +23,7 @@ import (
 	"bytes"
 	"fmt"
 	"net"
-	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
@@ -111,30 +108,9 @@ func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 		})
 	}
 
-	// Graceful shutdown on SIGINT / SIGTERM.
-	sigCh := make(chan os.Signal, 1)
-	stopCh := make(chan struct{})
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		logx.Infof("Server", "Shutting down...")
-		close(stopCh)
-		_ = l.Close()
-	}()
-
-	for {
-		c, err := l.Accept()
-		if err != nil {
-			// If the listener was closed by signal, exit gracefully.
-			select {
-			case <-stopCh:
-				return
-			default:
-				continue
-			}
-		}
-		go handleServerConn(c, cfg, tables, tunnelSrv, revMgr, userReg)
-	}
+	serveUntilShutdown("Server", l, func(c net.Conn) {
+		handleServerConn(c, cfg, tables, tunnelSrv, revMgr, userReg)
+	})
 }
 
 // rejectReason explains why a handshaked user may not open a session, or returns "" when it may.
