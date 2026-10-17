@@ -208,28 +208,6 @@ func TestRewriteTextBody(t *testing.T) {
 			}
 		})
 	}
-
-	t.Run("empty or root prefix is a no-op", func(t *testing.T) {
-		for _, p := range []string{"", "/"} {
-			resp := bodyResponse("/page", []byte(`<a href="/x">`), map[string]string{"Content-Type": "text/html"})
-			if err := rewriteTextBody(resp, p); err != nil {
-				t.Fatal(err)
-			}
-			got, _ := io.ReadAll(resp.Body)
-			if string(got) != `<a href="/x">` || resp.Header.Get("Content-Length") != "" {
-				t.Errorf("prefix %q changed the response: %q %v", p, got, resp.Header)
-			}
-		}
-	})
-
-	t.Run("nil body or response is ignored", func(t *testing.T) {
-		if err := rewriteTextBody(nil, prefix); err != nil {
-			t.Fatal(err)
-		}
-		if err := rewriteTextBody(&http.Response{Header: http.Header{}}, prefix); err != nil {
-			t.Fatal(err)
-		}
-	})
 }
 
 func TestRewriteTextBodySizeCap(t *testing.T) {

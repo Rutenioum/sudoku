@@ -74,10 +74,6 @@ func ServeEntry(listenAddr string, mgr *Manager) error {
 		}
 
 		go func(raw net.Conn) {
-			if raw == nil {
-				return
-			}
-
 			var peek [4]byte
 			_ = raw.SetReadDeadline(time.Now().Add(5 * time.Second))
 			n, err := io.ReadFull(raw, peek[:])

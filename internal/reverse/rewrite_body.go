@@ -28,17 +28,20 @@ import (
 	"strings"
 )
 
-func rewriteTextBody(resp *http.Response, prefix string) error {
-	if resp == nil || resp.Body == nil || resp.Header == nil || prefix == "" || prefix == "/" {
-		return nil
-	}
+// maxBody caps what is buffered for rewriting; larger bodies stream through unchanged.
+const maxBody = 8 << 20
 
+// readCapped reads at most maxBody+1 bytes so callers can tell "over the cap" from "exactly the cap".
+func readCapped(r io.Reader) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(r, maxBody+1))
+}
+
+func rewriteTextBody(resp *http.Response, prefix string) error {
 	encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
 	if encoding != "" && encoding != "identity" && encoding != "gzip" {
 		return nil
 	}
 
-	const maxBody = 8 << 20
 	if resp.ContentLength > maxBody {
 		return nil
 	}
@@ -76,16 +79,8 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 		}
 	}
 
-	readAll := func(r io.Reader) ([]byte, error) {
-		b, err := io.ReadAll(io.LimitReader(r, maxBody+1))
-		if err != nil {
-			return nil, err
-		}
-		return b, nil
-	}
-
 	if encoding == "gzip" {
-		compressed, err := readAll(resp.Body)
+		compressed, err := readCapped(resp.Body)
 		if err != nil {
 			return err
 		}
@@ -100,7 +95,7 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 			setBody(compressed)
 			return nil
 		}
-		raw, err := readAll(gr)
+		raw, err := readCapped(gr)
 		_ = gr.Close()
 		if err != nil {
 			return err
@@ -122,7 +117,7 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 		return nil
 	}
 
-	raw, err := readAll(resp.Body)
+	raw, err := readCapped(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -142,9 +137,6 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 
 func inferContentTypeFromPath(p string) string {
 	p = strings.TrimSpace(p)
-	if p == "" {
-		return ""
-	}
 	if i := strings.Index(p, "?"); i >= 0 {
 		p = p[:i]
 	}
@@ -167,9 +159,6 @@ func inferContentTypeFromPath(p string) string {
 }
 
 func rewriteTextPayload(contentType string, in []byte, prefix string) []byte {
-	if in == nil {
-		return nil
-	}
 	if contentType == "text/html" || contentType == "application/xhtml+xml" {
 		out := rewriteHTMLRootAbsolutePaths(in, prefix)
 		return rewriteHTMLSrcset(out, prefix)
@@ -189,7 +178,7 @@ func isJavaScriptContentType(contentType string) bool {
 func isRewritableContentType(ct string) bool {
 	switch {
 	case strings.HasPrefix(ct, "text/"):
-		return !isJavaScriptContentType(ct)
+		return true
 	case ct == "application/json", ct == "application/manifest+json", ct == "application/xhtml+xml", ct == "image/svg+xml":
 		return true
 	default:

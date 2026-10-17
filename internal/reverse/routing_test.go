@@ -147,14 +147,6 @@ func TestRewriteLocation(t *testing.T) {
 			}
 		})
 	}
-
-	t.Run("absolute without request untouched", func(t *testing.T) {
-		resp := &http.Response{Header: http.Header{"Location": {"http://front/login"}}}
-		rewriteLocation(resp, "/p")
-		if got := resp.Header.Get("Location"); got != "http://front/login" {
-			t.Fatalf("Location = %q", got)
-		}
-	})
 }
 
 func TestRewriteSetCookiePath(t *testing.T) {
@@ -258,7 +250,6 @@ func TestWebSocketHeaderHelpers(t *testing.T) {
 		{"connection without upgrade token", upgrade("websocket", "keep-alive"), false},
 		{"other upgrade protocol", upgrade("h2c", "Upgrade"), false},
 		{"missing upgrade", upgrade("", "Upgrade"), false},
-		{"nil request", nil, false},
 	}
 	for _, tc := range isUpgrade {
 		if got := isWebSocketUpgrade(tc.r); got != tc.want {
@@ -287,9 +278,6 @@ func TestWebSocketHeaderHelpers(t *testing.T) {
 		if got := websocketClientOffersSubprotocol(r, sudokuTCPSubprotocol); got != tc.want {
 			t.Errorf("websocketClientOffersSubprotocol(%s) = %v, want %v", tc.name, got, tc.want)
 		}
-	}
-	if websocketClientOffersSubprotocol(nil, sudokuTCPSubprotocol) {
-		t.Error("nil request must not offer a subprotocol")
 	}
 }
 

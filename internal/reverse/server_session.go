@@ -42,9 +42,6 @@ type helloMessage struct {
 // HandleServerSession handles a reverse client registration connection.
 // helloPayload is the JSON payload from the control plane.
 func HandleServerSession(conn net.Conn, userHash string, mgr *Manager, helloPayload []byte) error {
-	if conn == nil {
-		return fmt.Errorf("nil conn")
-	}
 	if mgr == nil {
 		return fmt.Errorf("reverse manager not configured")
 	}

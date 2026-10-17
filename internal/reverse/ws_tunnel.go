@@ -30,11 +30,6 @@ import (
 const sudokuTCPSubprotocol = "sudoku-tcp-v1"
 
 func serveSudokuTCPTunnel(w http.ResponseWriter, r *http.Request, mux *tunnel.MuxClient, target string) {
-	if w == nil || r == nil || mux == nil || strings.TrimSpace(target) == "" {
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-		return
-	}
-
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols:    []string{sudokuTCPSubprotocol},
 		CompressionMode: websocket.CompressionDisabled,
@@ -59,9 +54,6 @@ func serveSudokuTCPTunnel(w http.ResponseWriter, r *http.Request, mux *tunnel.Mu
 }
 
 func websocketClientOffersSubprotocol(r *http.Request, want string) bool {
-	if r == nil {
-		return false
-	}
 	for _, v := range r.Header.Values("Sec-WebSocket-Protocol") {
 		for _, part := range strings.Split(v, ",") {
 			if strings.TrimSpace(part) == want {
@@ -73,9 +65,6 @@ func websocketClientOffersSubprotocol(r *http.Request, want string) bool {
 }
 
 func isWebSocketUpgrade(r *http.Request) bool {
-	if r == nil {
-		return false
-	}
 	if !strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") {
 		return false
 	}
@@ -83,16 +72,9 @@ func isWebSocketUpgrade(r *http.Request) bool {
 }
 
 func headerHasToken(h http.Header, key, token string) bool {
-	if h == nil {
-		return false
-	}
-	token = strings.ToLower(strings.TrimSpace(token))
-	if token == "" {
-		return false
-	}
 	for _, v := range h.Values(key) {
 		for _, part := range strings.Split(v, ",") {
-			if strings.ToLower(strings.TrimSpace(part)) == token {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
 				return true
 			}
 		}

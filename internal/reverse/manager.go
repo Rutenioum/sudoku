@@ -169,39 +169,31 @@ func (m *Manager) RegisterSession(clientID string, mux *tunnel.MuxClient, routes
 }
 
 func (m *Manager) UnregisterSession(mux *tunnel.MuxClient) {
-	if m == nil || mux == nil {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sess := m.sessions[mux]
+	if sess == nil {
 		return
 	}
-
-	m.mu.Lock()
-	sess := m.sessions[mux]
-	if sess != nil {
-		delete(m.sessions, mux)
-		if sess.tcp && m.tcp != nil && m.tcp.mux == mux {
-			m.tcp = nil
-		}
-		for _, p := range sess.prefixes {
-			if ent := m.routes[p]; ent != nil {
-				delete(m.routes, p)
-			}
-		}
+	delete(m.sessions, mux)
+	if sess.tcp {
+		m.tcp = nil
 	}
-	m.mu.Unlock()
+	for _, p := range sess.prefixes {
+		delete(m.routes, p)
+	}
 }
 
 // ServeTCP handles a raw TCP connection by forwarding it through the reverse session.
 //
 // It requires a reverse route with an empty path (Path=="") to be registered.
 func (m *Manager) ServeTCP(conn net.Conn) {
-	if conn == nil {
-		return
-	}
-
 	m.mu.RLock()
 	ent := m.tcp
 	m.mu.RUnlock()
 
-	if ent == nil || ent.mux == nil || strings.TrimSpace(ent.target) == "" {
+	if ent == nil {
 		_ = conn.Close()
 		return
 	}
@@ -216,15 +208,6 @@ func (m *Manager) ServeTCP(conn net.Conn) {
 }
 
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if m == nil {
-		http.Error(w, "reverse proxy not configured", http.StatusServiceUnavailable)
-		return
-	}
-	if r == nil || r.URL == nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-
 	path := r.URL.Path
 
 	m.mu.RLock()
@@ -237,7 +220,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	m.mu.RUnlock()
 
-	if entry == nil || entry.proxy == nil {
+	if entry == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -245,7 +228,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// If the request path doesn't contain a reverse prefix but a Referer does (common for
 	// root-absolute assets/API calls like "/static/app.js" or "/api/foo"), rewrite it into the
 	// correct subpath so routing works without mutating response bodies.
-	if entry.prefix != "" && entry.prefix != "/" && pathPrefixMatch(path, entry.prefix) == false {
+	if entry.prefix != "/" && !pathPrefixMatch(path, entry.prefix) {
 		r.URL.Path = entry.prefix + path
 		r.URL.RawPath = ""
 		path = r.URL.Path
@@ -254,22 +237,19 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// /<prefix> (no trailing slash) is reserved for Sudoku's TCP-over-WS tunnel when the client
 	// explicitly negotiates the "sudoku-tcp-v1" subprotocol. Any other WS upgrade should fall
 	// through to the normal reverse proxy (and must not be redirected).
-	if path == entry.prefix && isWebSocketUpgrade(r) {
-		if entry.mux != nil && websocketClientOffersSubprotocol(r, sudokuTCPSubprotocol) {
-			serveSudokuTCPTunnel(w, r, entry.mux, entry.target)
-			return
-		}
-	} else if entry.prefix != "" && entry.prefix != "/" && path == entry.prefix && r.Method != "" {
-		// Ensure the route root is treated as a directory. Many apps use relative asset URLs
-		// (e.g. "static/app.js"); without a trailing slash, browsers resolve them to "/static/...".
-		// Redirecting keeps the app working under a subpath like "/gitea/" or "/netdata/".
-		switch r.Method {
-		case http.MethodGet, http.MethodHead:
+	if path == entry.prefix {
+		if isWebSocketUpgrade(r) {
+			if websocketClientOffersSubprotocol(r, sudokuTCPSubprotocol) {
+				serveSudokuTCPTunnel(w, r, entry.mux, entry.target)
+				return
+			}
+		} else if entry.prefix != "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			// Many apps use relative asset URLs ("static/app.js"); without the trailing slash browsers
+			// resolve them against "/", so the route root must look like a directory.
 			u := *r.URL
 			u.Path = path + "/"
 			http.Redirect(w, r, u.String(), http.StatusPermanentRedirect)
 			return
-		default:
 		}
 	}
 
@@ -282,9 +262,6 @@ func (m *Manager) matchLocked(reqPath string) *routeEntry {
 		bestSize int
 	)
 	for prefix, entry := range m.routes {
-		if entry == nil {
-			continue
-		}
 		if !pathPrefixMatch(reqPath, prefix) {
 			continue
 		}
@@ -297,9 +274,6 @@ func (m *Manager) matchLocked(reqPath string) *routeEntry {
 }
 
 func (m *Manager) matchByRefererLocked(r *http.Request) *routeEntry {
-	if r == nil {
-		return nil
-	}
 	ref := strings.TrimSpace(r.Header.Get("Referer"))
 	if ref == "" {
 		return nil
@@ -321,9 +295,6 @@ func (m *Manager) matchByRefererLocked(r *http.Request) *routeEntry {
 const reversePrefixCookieName = "sudoku_rev_prefix"
 
 func (m *Manager) matchByCookieLocked(r *http.Request) *routeEntry {
-	if r == nil {
-		return nil
-	}
 	c, err := r.Cookie(reversePrefixCookieName)
 	if err != nil {
 		return nil
@@ -389,10 +360,10 @@ func newRouteProxy(prefix, target string, stripPrefix bool, hostHeader string, m
 		} else if defaultHostHeader != "" {
 			req.Host = defaultHostHeader
 		}
-		if prefix != "" && prefix != "/" {
+		if prefix != "/" {
 			req.Header.Set("X-Forwarded-Prefix", prefix)
 		}
-		if stripPrefix && prefix != "" && prefix != "/" {
+		if stripPrefix && prefix != "/" {
 			// Many web apps gzip/br their HTML/JS/CSS when the client sends Accept-Encoding.
 			// Subpath support requires response rewriting, so force identity encoding upstream.
 			req.Header.Del("Accept-Encoding")
@@ -404,7 +375,7 @@ func newRouteProxy(prefix, target string, stripPrefix bool, hostHeader string, m
 		// - absolute redirects (Location: /foo)
 		// - cookie paths (Path=/)
 		// - root-absolute asset URLs in HTML/CSS/SVG/JSON ("/assets/...", url(/assets/...))
-		if stripPrefix && prefix != "" && prefix != "/" {
+		if stripPrefix && prefix != "/" {
 			rewriteLocation(resp, prefix)
 			rewriteSetCookiePath(resp, prefix)
 			rewriteReversePrefixCookie(resp, prefix)
@@ -427,33 +398,18 @@ func newRouteProxy(prefix, target string, stripPrefix bool, hostHeader string, m
 }
 
 func stripPathPrefix(reqPath, prefix string) string {
-	if prefix == "" || prefix == "/" {
-		if reqPath == "" {
-			return "/"
-		}
-		return reqPath
-	}
-	if reqPath == prefix {
+	switch {
+	case reqPath == prefix:
 		return "/"
-	}
-	if strings.HasPrefix(reqPath, prefix+"/") {
-		out := strings.TrimPrefix(reqPath, prefix)
-		if out == "" {
-			return "/"
-		}
-		return out
-	}
-	// Not a match; keep as-is.
-	if reqPath == "" {
+	case prefix != "/" && strings.HasPrefix(reqPath, prefix+"/"):
+		return reqPath[len(prefix):]
+	case reqPath == "":
 		return "/"
 	}
 	return reqPath
 }
 
 func rewriteLocation(resp *http.Response, prefix string) {
-	if resp == nil || resp.Header == nil || prefix == "" || prefix == "/" {
-		return
-	}
 	loc := strings.TrimSpace(resp.Header.Get("Location"))
 	if loc == "" {
 		return
@@ -462,7 +418,7 @@ func rewriteLocation(resp *http.Response, prefix string) {
 	// Root-absolute redirect.
 	if strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") {
 		u, err := url.Parse(loc)
-		if err != nil || u == nil || u.Path == "" || !strings.HasPrefix(u.Path, "/") {
+		if err != nil || u.Path == "" || !strings.HasPrefix(u.Path, "/") {
 			return
 		}
 		if pathPrefixMatch(u.Path, prefix) {
@@ -483,7 +439,7 @@ func rewriteLocation(resp *http.Response, prefix string) {
 		if strings.HasPrefix(u.Path, prefix+"/") || u.Path == prefix {
 			return
 		}
-		if resp.Request == nil || !sameHTTPHost(resp.Request.Host, u.Host, u.Scheme) {
+		if !sameHTTPHost(resp.Request.Host, u.Host, u.Scheme) {
 			return
 		}
 		u.Path = prefix + u.Path
@@ -528,9 +484,6 @@ func sameHTTPHost(reqHost, locHost, scheme string) bool {
 }
 
 func rewriteSetCookiePath(resp *http.Response, prefix string) {
-	if resp == nil || resp.Header == nil || prefix == "" || prefix == "/" {
-		return
-	}
 	values := resp.Header.Values("Set-Cookie")
 	if len(values) == 0 {
 		return
@@ -541,9 +494,6 @@ func rewriteSetCookiePath(resp *http.Response, prefix string) {
 		parts := strings.Split(v, ";")
 		for i := range parts {
 			part := strings.TrimSpace(parts[i])
-			if part == "" {
-				continue
-			}
 			if len(part) < 5 {
 				continue
 			}
@@ -568,9 +518,6 @@ func rewriteSetCookiePath(resp *http.Response, prefix string) {
 }
 
 func rewriteReversePrefixCookie(resp *http.Response, prefix string) {
-	if resp == nil || resp.Header == nil {
-		return
-	}
 	p := normalizePrefix(prefix)
 	if p == "" {
 		return
