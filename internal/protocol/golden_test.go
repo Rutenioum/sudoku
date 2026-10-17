@@ -53,3 +53,58 @@ func TestGoldenReadAddress(t *testing.T) {
 		}
 	}
 }
+
+func TestGoldenAppendAddress(t *testing.T) {
+	prefix := []byte{0xaa, 0xbb}
+	for _, c := range goldenEncode {
+		got, err := AppendAddress(append([]byte(nil), prefix...), c.addr)
+		if err != nil {
+			t.Fatalf("AppendAddress(%.40q): %v", c.addr, err)
+		}
+		if !bytes.Equal(got[:2], prefix) || hex.EncodeToString(got[2:]) != c.wire {
+			t.Errorf("AppendAddress(%.40q) = %.80x, want aabb%.80s", c.addr, got, c.wire)
+		}
+	}
+	for _, addr := range goldenEncodeReject {
+		got, err := AppendAddress(append([]byte(nil), prefix...), addr)
+		if err == nil {
+			t.Errorf("AppendAddress(%.40q) accepted, reference rejects it", addr)
+		}
+		if !bytes.Equal(got, prefix) {
+			t.Errorf("AppendAddress(%.40q) modified dst on error: %x", addr, got)
+		}
+	}
+}
+
+func TestGoldenDecodeAddress(t *testing.T) {
+	for _, c := range goldenDecode {
+		wire := mustHex(t, c.wire)
+		for _, tail := range [][]byte{nil, {0xde, 0xad}} {
+			host, err := DecodeAddress(append(append([]byte(nil), wire...), tail...))
+			if err != nil {
+				t.Fatalf("DecodeAddress(%.40s): %v", c.wire, err)
+			}
+			if host != c.host {
+				t.Errorf("DecodeAddress(%.40s) = %.60q, want %.60q", c.wire, host, c.host)
+			}
+		}
+	}
+	for _, w := range goldenDecodeReject {
+		if _, err := DecodeAddress(mustHex(t, w)); err == nil {
+			t.Errorf("DecodeAddress(%q) accepted, reference rejects it", w)
+		}
+	}
+}
+
+func TestDecodeAddressBracketsColonDomain(t *testing.T) {
+	wire := append([]byte{AddrTypeDomain, 5}, "a:b:c"...)
+	wire = append(wire, 0x00, 0x50)
+	want, _, _, err := ReadAddress(bytes.NewReader(wire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeAddress(wire)
+	if err != nil || got != want || want != "[a:b:c]:80" {
+		t.Errorf("DecodeAddress = (%q, %v), ReadAddress = %q", got, err, want)
+	}
+}
