@@ -123,12 +123,23 @@ func (pc *PackedConn) GetBufferedAndRecorded() []byte {
 	return pc.rec.recordedWithBuffered(pc.reader)
 }
 
-func (pc *PackedConn) appendForcedPadding(out []byte) []byte {
-	return append(out, pc.getPaddingByte())
+// appendByte feeds one plaintext byte into the 6-bit accumulator and emits every
+// group it completes.
+func (pc *PackedConn) appendByte(out []byte, b byte) []byte {
+	pc.bitBuf = pc.bitBuf<<8 | uint64(b)
+	pc.bitCount += 8
+	for pc.bitCount >= 6 {
+		pc.bitCount -= 6
+		group := byte(pc.bitBuf >> pc.bitCount)
+		pc.bitBuf &= 1<<pc.bitCount - 1
+		out = appendPackedGroup(out, pc.table.layout, pc.rng, pc.paddingThreshold, pc.padPool, group)
+	}
+	return out
 }
 
-func (pc *PackedConn) nextProtectedPrefixGap() int {
-	return 1 + pc.rng.Intn(2)
+// appendForcedPadding adds one padding byte unconditionally.
+func (pc *PackedConn) appendForcedPadding(out []byte) []byte {
+	return append(out, pc.padPool[pc.rng.Intn(len(pc.padPool))])
 }
 
 func (pc *PackedConn) writeProtectedPrefix(out []byte, p []byte) ([]byte, int) {
@@ -145,27 +156,16 @@ func (pc *PackedConn) writeProtectedPrefix(out []byte, p []byte) ([]byte, int) {
 		out = pc.appendForcedPadding(out)
 	}
 
-	gap := pc.nextProtectedPrefixGap()
+	gap := 1 + pc.rng.Intn(2)
 	effective := 0
 	for i := 0; i < limit; i++ {
-		pc.bitBuf = (pc.bitBuf << 8) | uint64(p[i])
-		pc.bitCount += 8
-		for pc.bitCount >= 6 {
-			pc.bitCount -= 6
-			group := byte(pc.bitBuf >> pc.bitCount)
-			if pc.bitCount == 0 {
-				pc.bitBuf = 0
-			} else {
-				pc.bitBuf &= (1 << pc.bitCount) - 1
-			}
-			out = appendPackedGroup(out, pc.table.layout, pc.rng, pc.paddingThreshold, pc.padPool, group)
-		}
+		out = pc.appendByte(out, p[i])
 
 		effective++
 		if effective >= gap {
 			out = pc.appendForcedPadding(out)
 			effective = 0
-			gap = pc.nextProtectedPrefixGap()
+			gap = 1 + pc.rng.Intn(2)
 		}
 	}
 
@@ -173,15 +173,12 @@ func (pc *PackedConn) writeProtectedPrefix(out []byte, p []byte) ([]byte, int) {
 }
 
 func appendPackedGroup(out []byte, layout *byteLayout, rng *sudokuRand, paddingThreshold uint64, padPool []byte, group byte) []byte {
-	if paddingThreshold != 0 {
-		u := rng.Uint32()
-		if uint64(u) < paddingThreshold {
-			out = append(out, padPool[fastIntnFromUint32(rng.Uint32(), len(padPool))])
-		}
-	}
+	out = maybeAppendPackedPadding(out, rng, paddingThreshold, padPool)
 	return append(out, layout.encodeGroup[group&0x3F])
 }
 
+// maybeAppendPackedPadding appends one random padding byte with the
+// connection's padding probability.
 func maybeAppendPackedPadding(out []byte, rng *sudokuRand, paddingThreshold uint64, padPool []byte) []byte {
 	if paddingThreshold != 0 {
 		u := rng.Uint32()
@@ -222,20 +219,8 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 	// Align the protected prefix to a complete group boundary.
 	for pc.bitCount > 0 && i < n {
 		out = maybeAppendPackedPadding(out, rng, paddingThreshold, padPool)
-		b := p[i]
+		out = pc.appendByte(out, p[i])
 		i++
-		pc.bitBuf = (pc.bitBuf << 8) | uint64(b)
-		pc.bitCount += 8
-		for pc.bitCount >= 6 {
-			pc.bitCount -= 6
-			group := byte(pc.bitBuf >> pc.bitCount)
-			if pc.bitCount == 0 {
-				pc.bitBuf = 0
-			} else {
-				pc.bitBuf &= (1 << pc.bitCount) - 1
-			}
-			out = appendPackedGroup(out, layout, rng, paddingThreshold, padPool, group)
-		}
 	}
 
 	// Encode complete blocks in one batch. Prefix and tail handling retain the
@@ -263,19 +248,7 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 
 	// Handle the remaining 1 or 2 bytes.
 	for ; i < n; i++ {
-		b := p[i]
-		pc.bitBuf = (pc.bitBuf << 8) | uint64(b)
-		pc.bitCount += 8
-		for pc.bitCount >= 6 {
-			pc.bitCount -= 6
-			group := byte(pc.bitBuf >> pc.bitCount)
-			if pc.bitCount == 0 {
-				pc.bitBuf = 0
-			} else {
-				pc.bitBuf &= (1 << pc.bitCount) - 1
-			}
-			out = appendPackedGroup(out, layout, rng, paddingThreshold, padPool, group)
-		}
+		out = pc.appendByte(out, p[i])
 	}
 
 	// Flush residual bits.
@@ -311,7 +284,7 @@ func (pc *PackedConn) Flush() error {
 		pc.bitBuf = 0
 		pc.bitCount = 0
 
-		out = append(out, pc.table.layout.groupByte(group&0x3F))
+		out = append(out, pc.table.layout.encodeGroup[group])
 		out = append(out, pc.padMarker)
 	}
 
@@ -360,9 +333,4 @@ func (pc *PackedConn) Read(p []byte) (int, error) {
 			return outN, nil
 		}
 	}
-}
-
-// getPaddingByte picks a random padding byte from the pool.
-func (pc *PackedConn) getPaddingByte() byte {
-	return pc.padPool[pc.rng.Intn(len(pc.padPool))]
 }

@@ -43,10 +43,6 @@ func (l *byteLayout) hintByte(val, pos byte) byte {
 	return l.encodeHint[val&0x03][pos&0x0F]
 }
 
-func (l *byteLayout) groupByte(group byte) byte {
-	return l.encodeGroup[group&0x3F]
-}
-
 // resolveLayout picks the byte layout for a single traffic direction.
 // ASCII always wins if requested. Custom patterns are ignored when ASCII is preferred.
 func resolveLayout(mode string, customPattern string) (*byteLayout, error) {
