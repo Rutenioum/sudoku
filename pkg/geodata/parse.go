@@ -71,23 +71,16 @@ func newRuleBuildState() *ruleBuildState {
 
 // parseRuleSource loads a YAML "payload:" document or, failing that, one rule per line.
 func parseRuleSource(body string, state *ruleBuildState) bool {
-	// A payload key must spell "payload"; skipping YAML otherwise spares plain lists a full parse.
-	if strings.Contains(body, "payload") {
-		var doc struct {
-			Payload []string `yaml:"payload"`
-		}
-		if err := yaml.Unmarshal([]byte(body), &doc); err == nil && len(doc.Payload) > 0 {
-			parsed := false
-			for _, rule := range doc.Payload {
-				if parseRule(rule, state) {
-					parsed = true
-				}
+	parsed := false
+	if payload, ok := readPayload(body); ok {
+		for _, rule := range payload {
+			if parseRule(rule, state) {
+				parsed = true
 			}
-			return parsed
 		}
+		return parsed
 	}
 
-	parsed := false
 	for text := body; text != ""; {
 		var line string
 		line, text, _ = strings.Cut(text, "\n")
@@ -96,6 +89,24 @@ func parseRuleSource(body string, state *ruleBuildState) bool {
 		}
 	}
 	return parsed
+}
+
+// readPayload returns the entries of a YAML "payload:" list.
+func readPayload(body string) ([]string, bool) {
+	if items, ok := scanPayloadList(body); ok {
+		return items, true
+	}
+	// A payload key must spell "payload"; skipping YAML otherwise spares plain lists a full parse.
+	if !strings.Contains(body, "payload") {
+		return nil, false
+	}
+	var doc struct {
+		Payload []string `yaml:"payload"`
+	}
+	if err := yaml.Unmarshal([]byte(body), &doc); err != nil || len(doc.Payload) == 0 {
+		return nil, false
+	}
+	return doc.Payload, true
 }
 
 // parseRule processes a single rule line.
