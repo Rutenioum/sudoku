@@ -71,10 +71,11 @@ type muxSession struct {
 	closeOnce sync.Once
 	closeErr  error
 
-	lastWrite     atomic.Int64
-	lastPong      atomic.Int64
-	keepaliveOnce sync.Once
-	pongRequests  chan struct{}
+	// wroteSinceTick is set by sendFrame and consumed by the idle keepalive tick.
+	wroteSinceTick atomic.Bool
+	lastPong       atomic.Int64
+	keepaliveOnce  sync.Once
+	pongRequests   chan struct{}
 
 	onOpen func(stream *muxStream, payload []byte)
 }
@@ -87,7 +88,6 @@ func newMuxSession(conn net.Conn, onOpen func(stream *muxStream, payload []byte)
 		onOpen:       onOpen,
 		pongRequests: make(chan struct{}, 1),
 	}
-	s.lastWrite.Store(time.Now().UnixNano())
 	s.lastPong.Store(time.Now().UnixNano())
 	go s.readLoop()
 	go s.controlLoop()
@@ -194,51 +194,63 @@ func (s *muxSession) sendFrame(frameType byte, streamID uint32, payload []byte) 
 		s.closeWithError(err)
 		return err
 	}
-	s.lastWrite.Store(time.Now().UnixNano())
+	// Load first: the store only happens once per keepalive interval, so the hot path never
+	// writes the shared cache line.
+	if !s.wroteSinceTick.Load() {
+		s.wroteSinceTick.Store(true)
+	}
 	return nil
 }
 
-func (s *muxSession) startKeepalive(interval time.Duration) {
-	s.startKeepaliveMode(interval, false)
-}
+// muxKeepaliveKind selects how a session proves to its peer (and to middleboxes) that it is alive.
+type muxKeepaliveKind uint8
 
-func (s *muxSession) startPingKeepalive(interval time.Duration) {
-	s.startKeepaliveMode(interval, true)
-}
+const (
+	// muxKeepaliveIdle sends an empty data frame after a full interval without any write.
+	muxKeepaliveIdle muxKeepaliveKind = iota
+	// muxKeepalivePing sends a ping every interval and closes the session once no pong
+	// has arrived for three intervals.
+	muxKeepalivePing
+)
 
-func (s *muxSession) startKeepaliveMode(interval time.Duration, ping bool) {
+func (s *muxSession) startKeepalive(interval time.Duration, kind muxKeepaliveKind) {
 	if s == nil || interval <= 0 {
 		return
 	}
 	s.keepaliveOnce.Do(func() {
-		go func() {
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if ping {
-						if time.Since(time.Unix(0, s.lastPong.Load())) > 3*interval {
-							s.closeWithError(errors.New("mux keepalive timeout"))
-							return
-						}
-						if err := s.sendFrame(muxFramePing, 0, nil); err != nil {
-							return
-						}
-						continue
-					}
-					if time.Since(time.Unix(0, s.lastWrite.Load())) < interval {
-						continue
-					}
-					if err := s.sendFrame(muxFrameData, 0, nil); err != nil {
-						return
-					}
-				case <-s.closed:
-					return
-				}
-			}
-		}()
+		s.wroteSinceTick.Store(false)
+		go s.keepaliveLoop(interval, kind)
 	})
+}
+
+func (s *muxSession) keepaliveLoop(interval time.Duration, kind muxKeepaliveKind) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if !s.keepaliveTick(interval, kind) {
+				return
+			}
+		case <-s.closed:
+			return
+		}
+	}
+}
+
+// keepaliveTick reports whether the session is still usable.
+func (s *muxSession) keepaliveTick(interval time.Duration, kind muxKeepaliveKind) bool {
+	if kind == muxKeepalivePing {
+		if time.Since(time.Unix(0, s.lastPong.Load())) > 3*interval {
+			s.closeWithError(errors.New("mux keepalive timeout"))
+			return false
+		}
+		return s.sendFrame(muxFramePing, 0, nil) == nil
+	}
+	if s.wroteSinceTick.Swap(false) {
+		return true
+	}
+	return s.sendFrame(muxFrameData, 0, nil) == nil
 }
 
 func (s *muxSession) requestPong() {

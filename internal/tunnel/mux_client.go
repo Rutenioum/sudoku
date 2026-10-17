@@ -38,7 +38,7 @@ func NewMuxClient(conn net.Conn) (*MuxClient, error) {
 		return nil, fmt.Errorf("nil conn")
 	}
 	sess := newMuxSession(conn, nil)
-	sess.startKeepalive(muxKeepaliveInterval)
+	sess.startKeepalive(muxKeepaliveInterval, muxKeepaliveIdle)
 	return &MuxClient{sess: sess}, nil
 }
 

@@ -40,7 +40,7 @@ func TestMuxSession_KeepaliveUsesPingAndAcceptsPong(t *testing.T) {
 		_ = peerConn.Close()
 	})
 
-	session.startPingKeepalive(10 * time.Millisecond)
+	session.startKeepalive(10*time.Millisecond, muxKeepalivePing)
 	_ = peerConn.SetReadDeadline(time.Now().Add(time.Second))
 
 	var header [muxHeaderSize]byte

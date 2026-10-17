@@ -277,11 +277,11 @@ func (d *MuxDialer) createSession(ctx context.Context) (*muxSession, error) {
 		return nil, net.ErrClosed
 	}
 	sess := newMuxSession(baseConn, nil)
+	kind := muxKeepaliveIdle
 	if d.Config.HTTPMaskTunnelEnabled() && strings.ToLower(strings.TrimSpace(d.Config.HTTPMask.Mode)) != "ws" {
-		sess.startPingKeepalive(muxKeepaliveInterval)
-	} else {
-		sess.startKeepalive(muxKeepaliveInterval)
+		kind = muxKeepalivePing
 	}
+	sess.startKeepalive(muxKeepaliveInterval, kind)
 	return sess, nil
 }
 
