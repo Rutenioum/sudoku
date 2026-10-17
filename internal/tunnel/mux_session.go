@@ -141,7 +141,7 @@ func (s *muxSession) closeWithError(err error) {
 		s.streamsMu.Unlock()
 
 		for _, st := range streams {
-			st.closeNoSend(err)
+			st.abort(err)
 		}
 
 		close(s.closed)
@@ -411,7 +411,7 @@ func (s *muxSession) readLoop() {
 				continue
 			}
 			if err := st.enqueue(chunk); err != nil {
-				st.closeNoSend(err)
+				st.abort(err)
 				s.removeStream(streamID)
 				// Sending a reset must not hold up unrelated streams.
 				go s.sendReset(streamID, err.Error())
@@ -479,7 +479,7 @@ func (s *muxSession) readLoop() {
 			if msg == "" {
 				msg = "reset"
 			}
-			st.closeNoSend(errors.New(msg))
+			st.abort(errors.New(msg))
 			s.removeStream(streamID)
 
 		default:

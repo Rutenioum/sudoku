@@ -154,7 +154,7 @@ func TestMuxStream_EnqueueAfterCloseDoesNotBlock(t *testing.T) {
 		}
 	}
 
-	st.closeNoSend(io.ErrClosedPipe)
+	st.abort(io.ErrClosedPipe)
 	if err := st.enqueue(&muxChunk{data: payload}); err != nil {
 		t.Fatalf("enqueue after close: %v", err)
 	}

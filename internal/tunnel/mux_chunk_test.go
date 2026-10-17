@@ -68,7 +68,7 @@ func TestMuxChunksConcurrentClose(t *testing.T) {
 			for range 10 {
 				_, _ = stream.Read(buf)
 			}
-			stream.closeNoSend(net.ErrClosed)
+			stream.abort(net.ErrClosed)
 			_ = stream.Close()
 		}()
 		wg.Wait()

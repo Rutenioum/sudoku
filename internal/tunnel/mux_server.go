@@ -57,7 +57,7 @@ func HandleMuxWithDialer(conn net.Conn, onConnect func(targetAddr string), dialT
 		addr, err := decodeMuxOpenTarget(payload)
 		if err != nil {
 			sess.sendReset(stream.id, "bad address")
-			stream.closeNoSend(err)
+			stream.abort(err)
 			sess.removeStream(stream.id)
 			return
 		}
@@ -68,7 +68,7 @@ func HandleMuxWithDialer(conn net.Conn, onConnect func(targetAddr string), dialT
 		target, err := dialTarget(addr)
 		if err != nil {
 			sess.sendReset(stream.id, err.Error())
-			stream.closeNoSend(err)
+			stream.abort(err)
 			sess.removeStream(stream.id)
 			return
 		}

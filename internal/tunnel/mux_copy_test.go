@@ -114,7 +114,7 @@ func TestMuxWriteToOwnsBlockDuringConcurrentClose(t *testing.T) {
 		if closeRead {
 			// A session error must not prevent a later local CloseRead from
 			// releasing unread blocks.
-			stream.closeNoSend(net.ErrClosed)
+			stream.abort(net.ErrClosed)
 			_ = stream.CloseRead()
 		} else {
 			_ = stream.Close()
@@ -146,7 +146,7 @@ func TestMuxWriteToDrainsBeforeSessionError(t *testing.T) {
 	chunk := acquireMuxChunk(1024)
 	copy(chunk.data, bytes.Repeat([]byte{0x31}, 1024))
 	_ = stream.enqueue(chunk)
-	stream.closeNoSend(net.ErrClosed)
+	stream.abort(net.ErrClosed)
 	var out bytes.Buffer
 	n, err := io.Copy(&out, stream)
 	if n != 1024 || err != net.ErrClosed || !bytes.Equal(out.Bytes(), bytes.Repeat([]byte{0x31}, 1024)) {

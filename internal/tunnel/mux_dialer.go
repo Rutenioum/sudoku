@@ -78,7 +78,7 @@ func openMuxStream(sess *muxSession, payload []byte) (net.Conn, error) {
 	st := newMuxStream(sess, streamID)
 	sess.registerStream(st)
 	if err := sess.sendFrame(muxFrameOpen, streamID, payload); err != nil {
-		st.closeNoSend(err)
+		st.abort(err)
 		sess.removeStream(streamID)
 		return nil, err
 	}

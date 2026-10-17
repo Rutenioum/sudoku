@@ -56,7 +56,9 @@ func newMuxStream(session *muxSession, id uint32) *muxStream {
 	return st
 }
 
-func (c *muxStream) closeNoSend(err error) {
+// abort closes the stream locally and wakes blocked readers and writers; it sends no frame
+// to the peer, so it is for streams the peer already ended or a dead session.
+func (c *muxStream) abort(err error) {
 	if err == nil {
 		err = io.EOF
 	}
