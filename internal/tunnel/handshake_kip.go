@@ -20,81 +20,36 @@ with this application without prior consent.
 package tunnel
 
 import (
-	"crypto/ecdh"
-	"crypto/rand"
 	"fmt"
-	"io"
 	"net"
-	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/crypto"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
-const (
-	kipHandshakeSkew = 60 * time.Second
-)
-
 func KIPHandshakeClient(rc *crypto.RecordConn, seed string, userHash [kipHelloUserHashSize]byte, feats uint32, tableHint uint32, hasTableHint bool) (selectedFeats uint32, err error) {
 	if rc == nil {
 		return 0, fmt.Errorf("nil conn")
 	}
-
-	curve := ecdh.X25519()
-	ephemeral, err := curve.GenerateKey(rand.Reader)
+	ch, ephemeral, err := newClientHello(userHash, feats, tableHint, hasTableHint)
 	if err != nil {
-		return 0, fmt.Errorf("ecdh generate failed: %w", err)
-	}
-
-	var nonce [kipHelloNonceSize]byte
-	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
-		return 0, fmt.Errorf("nonce generate failed: %w", err)
-	}
-
-	var clientPub [kipHelloPubSize]byte
-	copy(clientPub[:], ephemeral.PublicKey().Bytes())
-
-	ch := &KIPClientHello{
-		Timestamp:    time.Now(),
-		UserHash:     userHash,
-		Nonce:        nonce,
-		ClientPub:    clientPub,
-		Features:     feats,
-		TableHint:    tableHint,
-		HasTableHint: hasTableHint,
+		return 0, err
 	}
 	if err := WriteKIPMessage(rc, KIPTypeClientHello, ch.EncodePayload()); err != nil {
 		return 0, fmt.Errorf("write client hello failed: %w", err)
 	}
-
-	msg, err := ReadKIPMessage(rc)
+	sh, err := readServerHello(rc)
 	if err != nil {
-		return 0, fmt.Errorf("read server hello failed: %w", err)
+		return 0, err
 	}
-	if msg.Type != KIPTypeServerHello {
-		return 0, fmt.Errorf("unexpected handshake message: %d", msg.Type)
-	}
-	sh, err := DecodeKIPServerHelloPayload(msg.Payload)
+	sessC2S, sessS2C, err := deriveClientSession(seed, ephemeral, ch.Nonce, sh)
 	if err != nil {
-		return 0, fmt.Errorf("decode server hello failed: %w", err)
-	}
-	if sh.Nonce != nonce {
-		return 0, fmt.Errorf("handshake nonce mismatch")
-	}
-
-	shared, err := x25519SharedSecret(ephemeral, sh.ServerPub[:])
-	if err != nil {
-		return 0, fmt.Errorf("ecdh failed: %w", err)
-	}
-	sessC2S, sessS2C, err := deriveSessionDirectionalBases(seed, shared, nonce)
-	if err != nil {
-		return 0, fmt.Errorf("derive session keys failed: %w", err)
+		return 0, err
 	}
 	if err := rc.Rekey(sessC2S, sessS2C); err != nil {
 		return 0, fmt.Errorf("rekey failed: %w", err)
 	}
-
 	return sh.SelectedFeats, nil
 }
 

@@ -22,8 +22,7 @@ package tunnel
 import (
 	"bufio"
 	"bytes"
-	"crypto/ecdh"
-	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -221,21 +220,11 @@ func probeHandshakeBytes(probe []byte, cfg *config.Config, table *sudoku.Table, 
 		return err
 	}
 
-	msg, err := ReadKIPMessage(cConn)
+	ch, err := readClientHello(cConn)
 	if err != nil {
 		return err
 	}
-	if msg.Type != KIPTypeClientHello {
-		return fmt.Errorf("unexpected handshake message: %d", msg.Type)
-	}
-	ch, err := DecodeKIPClientHelloPayload(msg.Payload)
-	if err != nil {
-		return err
-	}
-	if connutil.AbsInt64(time.Now().Unix()-ch.Timestamp.Unix()) > int64(kipHandshakeSkew.Seconds()) {
-		return fmt.Errorf("time skew/replay")
-	}
-	return nil
+	return checkClientHelloSkew(ch, time.Now())
 }
 
 // HandshakeAndUpgradeWithTablesMeta is like HandshakeAndUpgradeWithTables but also returns handshake metadata
@@ -284,69 +273,38 @@ func HandshakeAndUpgradeWithTablesMeta(rawConn net.Conn, cfg *config.Config, tab
 		return nil, nil, fmt.Errorf("crypto setup failed: %w", err)
 	}
 
+	fail := func(err error) (net.Conn, *HandshakeMeta, error) {
+		return nil, nil, &SuspiciousError{Err: err, Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+	}
+
 	// 3. Handshake
 	_ = rawConn.SetReadDeadline(time.Now().Add(HandshakeTimeout))
-	msg, err := ReadKIPMessage(cConn)
+	ch, err := readClientHello(cConn)
 	if err != nil {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("handshake read failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+		return fail(err)
 	}
-	if msg.Type != KIPTypeClientHello {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("unexpected handshake message: %d", msg.Type), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
-	}
-	ch, err := DecodeKIPClientHelloPayload(msg.Payload)
+	accepted, err := acceptClientHello(ch, cfg.Key, selected.Table, tables, AllowHandshakeReplay)
 	if err != nil {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("decode client hello failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+		return fail(err)
 	}
-	if connutil.AbsInt64(time.Now().Unix()-ch.Timestamp.Unix()) > int64(kipHandshakeSkew.Seconds()) {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("time skew/replay"), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
-	}
-	meta := &HandshakeMeta{
-		UserHash:     kipUserHashHex(ch.UserHash),
-		UplinkPacked: selected.UplinkMode == ObfsUplinkPacked,
-	}
-	if !globalHandshakeReplay.allow(meta.UserHash, ch.Nonce, time.Now()) {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("replay"), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
-	}
-	resolvedTable, err := ResolveClientHelloTable(selected.Table, tables, ch)
-	if err != nil {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("resolve table hint failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
-	}
-	if resolvedTable != selected.Table {
-		downlink, closers := sudoku.NewServerDownlinkWriter(baseConn, resolvedTable.OppositeDirection(), cfg.PaddingMin, cfg.PaddingMax, cfg.EnablePureDownlink)
+	if accepted.table != selected.Table {
+		downlink, closers := sudoku.NewServerDownlinkWriter(baseConn, accepted.table.OppositeDirection(), cfg.PaddingMin, cfg.PaddingMax, cfg.EnablePureDownlink)
 		if !SwitchConnDownlinkWriter(obfsConn, downlink, closers...) {
-			return nil, nil, &SuspiciousError{Err: fmt.Errorf("switch downlink writer failed"), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+			return fail(errors.New("switch downlink writer failed"))
 		}
 	}
 
-	curve := ecdh.X25519()
-	serverEphemeral, err := curve.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("ecdh generate failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+	// The stream handshake answers only feature bits it knows; the early handshake echoes them all.
+	accepted.reply.SelectedFeats &= KIPFeatAll
+	if err := WriteKIPMessage(cConn, KIPTypeServerHello, accepted.reply.EncodePayload()); err != nil {
+		return fail(fmt.Errorf("write server hello failed: %w", err))
 	}
-	shared, err := x25519SharedSecret(serverEphemeral, ch.ClientPub[:])
-	if err != nil {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("ecdh failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
-	}
-	sessC2S, sessS2C, err := deriveSessionDirectionalBases(cfg.Key, shared, ch.Nonce)
-	if err != nil {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("derive session keys failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
-	}
-
-	var serverPub [kipHelloPubSize]byte
-	copy(serverPub[:], serverEphemeral.PublicKey().Bytes())
-	sh := &KIPServerHello{
-		Nonce:         ch.Nonce,
-		ServerPub:     serverPub,
-		SelectedFeats: ch.Features & KIPFeatAll,
-	}
-	if err := WriteKIPMessage(cConn, KIPTypeServerHello, sh.EncodePayload()); err != nil {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("write server hello failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
-	}
-	if err := cConn.Rekey(sessS2C, sessC2S); err != nil {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("rekey failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+	if err := cConn.Rekey(accepted.s2c, accepted.c2s); err != nil {
+		return fail(fmt.Errorf("rekey failed: %w", err))
 	}
 
 	sConn.StopRecording()
+	meta := &HandshakeMeta{UserHash: accepted.userHash, UplinkPacked: selected.UplinkMode == ObfsUplinkPacked}
 	return WrapConnWithObfsMeta(cConn, selected.UplinkMode), meta, nil
 }
 
