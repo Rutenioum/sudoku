@@ -208,61 +208,57 @@ func EarlyHandshakeUplinkPacked(conn net.Conn) (bool, bool) {
 //
 // The returned net.Conn carries the raw Sudoku stream (no HTTP headers).
 func DialTunnel(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
-	mode := normalizeTunnelMode(opts.Mode)
-	if mode == TunnelModeLegacy {
-		return nil, fmt.Errorf("legacy mode does not use http tunnel")
-	}
-
-	switch mode {
+	switch normalizeTunnelMode(opts.Mode) {
 	case TunnelModeStream:
 		return dialStreamFn(ctx, serverAddress, opts)
 	case TunnelModePoll:
 		return dialPollFn(ctx, serverAddress, opts)
 	case TunnelModeWS:
-		c, err := dialWS(ctx, serverAddress, opts)
-		if err != nil {
-			return nil, err
-		}
-		outConn := net.Conn(c)
-		if opts.EarlyHandshake != nil && opts.EarlyHandshake.WrapConn != nil && (opts.EarlyHandshake.Ready == nil || opts.EarlyHandshake.Ready()) {
-			upgraded, err := opts.EarlyHandshake.WrapConn(c)
-			if err != nil {
-				_ = c.Close()
-				return nil, err
-			}
-			if upgraded != nil {
-				outConn = upgraded
-			}
-			return outConn, nil
-		}
-		if opts.Upgrade != nil {
-			upgraded, err := opts.Upgrade(c)
-			if err != nil {
-				_ = c.Close()
-				return nil, err
-			}
-			if upgraded != nil {
-				outConn = upgraded
-			}
-		}
-		return outConn, nil
+		return dialWSTunnel(ctx, serverAddress, opts)
 	case TunnelModeAuto:
-		// "stream" can hang on some CDNs that buffer uploads until request body completes.
-		// Keep it on a short leash so we can fall back to poll within the caller's deadline.
-		streamCtx, cancelStream := context.WithTimeout(ctx, 3*time.Second)
-		c, errStream := dialStreamFn(streamCtx, serverAddress, opts)
-		cancelStream()
-		if errStream == nil {
-			return c, nil
-		}
-		c, errPoll := dialPollFn(ctx, serverAddress, opts)
-		if errPoll == nil {
-			return c, nil
-		}
-		return nil, fmt.Errorf("auto tunnel failed: stream: %v; poll: %w", errStream, errPoll)
-	default:
-		return dialStreamFn(ctx, serverAddress, opts)
+		return dialAutoTunnel(ctx, serverAddress, opts)
 	}
+	return nil, fmt.Errorf("legacy mode does not use http tunnel")
+}
+
+func dialWSTunnel(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
+	c, err := dialWS(ctx, serverAddress, opts)
+	if err != nil {
+		return nil, err
+	}
+	wrap := opts.Upgrade
+	if eh := opts.EarlyHandshake; eh != nil && eh.WrapConn != nil && (eh.Ready == nil || eh.Ready()) {
+		wrap = eh.WrapConn
+	}
+	if wrap == nil {
+		return c, nil
+	}
+	upgraded, err := wrap(c)
+	if err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	if upgraded == nil {
+		return c, nil
+	}
+	return upgraded, nil
+}
+
+// dialAutoTunnel tries stream first and falls back to poll.
+func dialAutoTunnel(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
+	// Stream can hang on CDNs that buffer uploads until the request body completes;
+	// the short leash leaves time to fall back within the caller's deadline.
+	streamCtx, cancelStream := context.WithTimeout(ctx, 3*time.Second)
+	c, errStream := dialStreamFn(streamCtx, serverAddress, opts)
+	cancelStream()
+	if errStream == nil {
+		return c, nil
+	}
+	c, errPoll := dialPollFn(ctx, serverAddress, opts)
+	if errPoll == nil {
+		return c, nil
+	}
+	return nil, fmt.Errorf("auto tunnel failed: stream: %v; poll: %w", errStream, errPoll)
 }
 
 var (
