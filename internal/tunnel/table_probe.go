@@ -107,7 +107,9 @@ func selectProbeCandidates[T any](r *bufio.Reader, candidates []T, probe func([]
 		return zero, nil, fmt.Errorf("drain buffered bytes failed: %w", err)
 	}
 
-	tmp := make([]byte, readChunk)
+	// Most handshakes are decided by the bytes bufio has already buffered, so the read
+	// chunk is only allocated once another read is actually needed.
+	var chunk []byte
 	for {
 		if len(candidates) == 1 {
 			tail, err := drainBuffered(r)
@@ -144,9 +146,12 @@ func selectProbeCandidates[T any](r *bufio.Reader, candidates []T, probe func([]
 			return zero, probeBytes, fmt.Errorf("handshake probe exceeded %d bytes", maxProbeBytes)
 		}
 
-		n, err := r.Read(tmp)
+		if chunk == nil {
+			chunk = make([]byte, readChunk)
+		}
+		n, err := r.Read(chunk)
 		if n > 0 {
-			probeBytes = append(probeBytes, tmp[:n]...)
+			probeBytes = append(probeBytes, chunk[:n]...)
 		}
 		if err != nil {
 			return zero, probeBytes, fmt.Errorf("handshake probe read failed: %w", err)
