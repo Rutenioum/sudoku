@@ -30,7 +30,7 @@ type recordingCodec interface {
 }
 
 func TestCodecBorrowedReadBuffer(t *testing.T) {
-	table := NewTable("borrowed-read-buffer", "prefer_ascii")
+	table := mustTable(t, "borrowed-read-buffer", "prefer_ascii")
 	for _, packed := range []bool{false, true} {
 		for _, fragmentSize := range []int{1, 7, 32768} {
 			t.Run(fmt.Sprintf("packed=%v/fragment=%d", packed, fragmentSize), func(t *testing.T) {

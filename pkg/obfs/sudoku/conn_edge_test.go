@@ -30,7 +30,7 @@ func TestConnWrite_Empty(t *testing.T) {
 	defer c1.Close()
 	defer c2.Close()
 
-	table := NewTable("edge-key", "prefer_entropy")
+	table := mustTable(t, "edge-key", "prefer_entropy")
 	conn := NewConn(c1, table, 0, 0, false)
 	if n, err := conn.Write(nil); err != nil || n != 0 {
 		t.Fatalf("Write(nil) = (%d, %v), want (0, nil)", n, err)
@@ -70,9 +70,9 @@ func TestPackedConnInvalidStateReturnsError(t *testing.T) {
 		t.Fatalf("nil PackedConn recorded = %v, want nil", got)
 	}
 
-	table := NewTable("invalid-state", "prefer_ascii")
+	table := mustTable(t, "invalid-state", "prefer_ascii")
 	malformed := &PackedConn{
-		Conn:             &MockConn{},
+		Conn:             &memConn{},
 		table:            table,
 		rng:              newSudokuRand(1),
 		paddingThreshold: probOne,

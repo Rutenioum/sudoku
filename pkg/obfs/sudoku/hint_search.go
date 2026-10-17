@@ -21,12 +21,9 @@ package sudoku
 
 const hintPositionsCount = 1820 // 16 choose 4
 
+// hintPositions lists every set of four grid cells in a fixed order; the order
+// is the order of a byte's puzzles in its encode table.
 var hintPositions = buildHintPositions()
-
-type hintPart struct {
-	val byte
-	pos byte
-}
 
 func buildHintPositions() [][4]byte {
 	positions := make([][4]byte, 0, hintPositionsCount)
@@ -40,24 +37,4 @@ func buildHintPositions() [][4]byte {
 		}
 	}
 	return positions
-}
-
-func hasUniqueMatch(grids []Grid, parts [4]hintPart) bool {
-	matchCount := 0
-	for _, g := range grids {
-		match := true
-		for _, p := range parts {
-			if g[p.pos] != p.val {
-				match = false
-				break
-			}
-		}
-		if match {
-			matchCount++
-			if matchCount > 1 {
-				return false
-			}
-		}
-	}
-	return matchCount == 1
 }

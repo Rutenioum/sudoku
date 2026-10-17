@@ -88,17 +88,17 @@ func BuildTables(cfg *Config) ([]*sudoku.Table, error) {
 	if c.TableIndex < 0 {
 		return nil, fmt.Errorf("TableIndex must be >= 0, got %d", c.TableIndex)
 	}
-	ts, err := sudoku.NewTableSet(c.Key, c.ASCII, c.CustomTables)
+	tables, err := cachedTables(c)
 	if err != nil {
 		return nil, err
 	}
-	if ts == nil || len(ts.Tables) == 0 {
+	if len(tables) == 0 {
 		return nil, fmt.Errorf("no sudoku tables configured")
 	}
-	if c.TableIndex >= len(ts.Tables) {
-		return nil, fmt.Errorf("TableIndex %d out of range for %d table(s)", c.TableIndex, len(ts.Tables))
+	if c.TableIndex >= len(tables) {
+		return nil, fmt.Errorf("TableIndex %d out of range for %d table(s)", c.TableIndex, len(tables))
 	}
-	return ts.Tables, nil
+	return tables, nil
 }
 
 // BuildTables builds every configured table candidate.

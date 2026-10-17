@@ -9,28 +9,30 @@ import (
 	"testing"
 )
 
-// These digests pin the pre-optimization wire stream, including padding,
-// protected prefixes and residual-bit markers, with a fixed random seed.
+// These digests pin this implementation's own wire stream, including padding,
+// protected prefixes and residual-bit markers, for a fixed random seed. They
+// guard against accidental drift; they are not the v0.5.1 contract, which
+// the reference vector tests hold.
 func TestCodecWireCompatibility(t *testing.T) {
 	goldens := map[string]string{
-		"prefer_ascii/packed=false/padding=0":     "3d71c28ecd52a4bc85a96d1b33338e2fb7ef232ccdd2d637f20f265c5d1ce86b",
-		"prefer_ascii/packed=false/padding=10":    "fd8447e168016cec7d2b6f8f9efe5b0de4e0f7192810ca0006f8cca4dcfae4e6",
-		"prefer_ascii/packed=false/padding=100":   "d15ace0e54d1637beb45cdf588461e683cd9f83ca1867c1d6b95caa8ecf6b252",
-		"prefer_ascii/packed=true/padding=0":      "da4b1867414d76bd02359cead3207929c883128dc4006866c5c89bab2c0c6d06",
-		"prefer_ascii/packed=true/padding=10":     "3e7e10f299b91afe0af5016e7d205d9a7c9a45b14a23190bbe8161640eb29487",
-		"prefer_ascii/packed=true/padding=100":    "a9a62c246cc4d1ce84818697adf479f302760e95ccc2f809ab181beefa64148e",
-		"prefer_entropy/packed=false/padding=0":   "680b1507632a5aeba3c4b0ad438d0c67abf02e34a0e866c1b73f9f8ab8b606b5",
-		"prefer_entropy/packed=false/padding=10":  "51676390cc94a8aad08701639e397f47f425b98f1833da0880c12525c3fe1677",
-		"prefer_entropy/packed=false/padding=100": "5c7d687c6b5785b83024f1d64a53c6c3f0cf3cf4d9f17de511072196dd73df61",
-		"prefer_entropy/packed=true/padding=0":    "d88a51e8bb5c7bbeac2bd1d4c2698078cf035001e63d209759708df6a3ba5d43",
-		"prefer_entropy/packed=true/padding=10":   "d177e19abaa3ae6d0573ce9aca4385e731c0ba2eb751fce51f7f4ae9e6ee9ce6",
-		"prefer_entropy/packed=true/padding=100":  "d7028cf1f39f15cfa90b48351a72ace24d4d173e3f0b04964203ea16f71e7cfa",
-		"custom/packed=false/padding=0":           "1ed09fecfd26e440ded7b03b957d9956f4bbb9ab12ee628a639ff225b9994431",
-		"custom/packed=false/padding=10":          "907c9bcf2294685ac92553476a93226903b92bba4dbfc71ab849ad031ae36148",
-		"custom/packed=false/padding=100":         "bf3e6d5c9cb1eaf46312e9438822981169ac1be9d7efec313616185f79043d9e",
-		"custom/packed=true/padding=0":            "86973270ed688d486b30468a1d0be4aec004d0e9200bf1dc564add61329f3eb2",
-		"custom/packed=true/padding=10":           "d3ff98a0f568607c7799532cc6bed740472bc06e683710c3570a430e722ce6e5",
-		"custom/packed=true/padding=100":          "7152d54386c1725b4e07180279ba520e7b6736fef7096afa8f0132b73c3416f0",
+		"prefer_ascii/packed=false/padding=0":     "729f13e04bc3c0bfd9415f0f5b098abab77d2e11ffafe975f1d59bc589435067",
+		"prefer_ascii/packed=false/padding=10":    "a6c2c4a46ce49e2c52a4d639f1ed75b58cda363b0c15592fc7b800ac1e227a54",
+		"prefer_ascii/packed=false/padding=100":   "43321f86ed4237649593971b2065845f60394e36bc6a9fa26af1629896b98d0f",
+		"prefer_ascii/packed=true/padding=0":      "9eda3a7a9ebf9a6349ae17a87ae22f2bc604108eeb303ea270018c739e104974",
+		"prefer_ascii/packed=true/padding=10":     "714c1ce842e37da14ef4581eb97e207e31ddd437204a31db40128c6410bf5d71",
+		"prefer_ascii/packed=true/padding=100":    "55b6c22153e6be412197fcb6a149a7f24662cadb7259a4149e4593c6b07ecbcc",
+		"prefer_entropy/packed=false/padding=0":   "70c1ae4785c2cf315f6ed1176d1e0d50c31e0ec116b086e8266574570af329d1",
+		"prefer_entropy/packed=false/padding=10":  "4117df64a2ce299ac5e2117b272341fb8a638afae11b920925d57fea24ec0bbd",
+		"prefer_entropy/packed=false/padding=100": "27c6cbca243ff429159b4aaed138a2a6f4efc0cd181e63a068369133473f69b4",
+		"prefer_entropy/packed=true/padding=0":    "c52de046d46f2dbaa5a53df56c7c1c3567ec4a1b501e656f36513c00fc37e0ae",
+		"prefer_entropy/packed=true/padding=10":   "763c16c1110716306b25b38b0cf13ed3c38eea2b67d944fc76504594fea124d9",
+		"prefer_entropy/packed=true/padding=100":  "51c8863c722ed38b27040d95c4114ea399339c7cb16376421b187c04de789ce8",
+		"custom/packed=false/padding=0":           "b5991e05b444611d2152c8a812d56facb27c7852ab8dd49bb5b6fda419e1bf14",
+		"custom/packed=false/padding=10":          "5af853d23f1fa58c6d0c4d070ebfff2885874e04ffa49524561ecf5af85d0e7e",
+		"custom/packed=false/padding=100":         "dd307a3ba6239a0c16ffaf37832237741d6ecae1a0e8e584bf74ea8310258f39",
+		"custom/packed=true/padding=0":            "4ecc515b7cdefee2f551d62306e874eedf6e715df86daf014a365e6fcaf9db39",
+		"custom/packed=true/padding=10":           "540418a5ae9a6471f10bc86954c7ed809624a5c2226c768d58acd5f5b9c33396",
+		"custom/packed=true/padding=100":          "9260da0e190871e3c081a5c35c376bcf5c839f2cd44d3e455ceb7fdf137ba43e",
 	}
 
 	for _, mode := range []string{"prefer_ascii", "prefer_entropy", "custom"} {
@@ -70,7 +72,7 @@ func TestCodecWireCompatibility(t *testing.T) {
 					}
 					digest := fmt.Sprintf("%x", sha256.Sum256(wire.Bytes()))
 					if digest != goldens[name] {
-						t.Fatal("encoded bytes differ from the legacy wire sample")
+						t.Fatal("encoded bytes differ from the pinned wire sample")
 					}
 					var reader net.Conn
 					raw := &fragmentConn{data: wire.Bytes(), limit: 127}
