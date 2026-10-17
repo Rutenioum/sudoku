@@ -19,13 +19,16 @@ with this application without prior consent.
 */
 package sudoku
 
-// Grid represents a 4x4 sudoku grid
-type Grid [16]uint8
+import "sync"
 
-// GenerateAllGrids generates all valid 4x4 Sudoku grids
-func GenerateAllGrids() []Grid {
-	var grids []Grid
-	var g Grid
+// grid is one filled 4x4 sudoku grid, row-major, values 1..4.
+type grid [16]uint8
+
+// generateAllGrids enumerates every valid 4x4 sudoku grid in a fixed order;
+// the order is part of the table-seeding contract.
+func generateAllGrids() []grid {
+	var grids []grid
+	var g grid
 	var backtrack func(int)
 
 	backtrack = func(idx int) {
@@ -63,3 +66,5 @@ func GenerateAllGrids() []Grid {
 	backtrack(0)
 	return grids
 }
+
+var allGrids = sync.OnceValue(generateAllGrids)

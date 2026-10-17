@@ -110,7 +110,7 @@ func newSingleDirectionTable(key string, mode string, customPattern string) (*Ta
 	seed := int64(binary.BigEndian.Uint64(h.Sum(nil)[:8]))
 	rng := rand.New(rand.NewSource(seed))
 
-	shuffledGrids := make([]Grid, len(grids))
+	shuffledGrids := make([]grid, len(grids))
 	copy(shuffledGrids, grids)
 	rng.Shuffle(len(shuffledGrids), func(i, j int) {
 		shuffledGrids[i], shuffledGrids[j] = shuffledGrids[j], shuffledGrids[i]

@@ -42,7 +42,7 @@ func buildHintPositions() [][4]byte {
 	return positions
 }
 
-func hasUniqueMatch(grids []Grid, parts [4]hintPart) bool {
+func hasUniqueMatch(grids []grid, parts [4]hintPart) bool {
 	matchCount := 0
 	for _, g := range grids {
 		match := true
