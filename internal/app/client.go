@@ -39,33 +39,21 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
-type PeekConn struct {
+// peekConn replays bytes consumed while sniffing the protocol before reading from the wire.
+type peekConn struct {
 	net.Conn
 	peeked []byte
 }
 
-func (c *PeekConn) CloseWrite() error {
-	if c == nil {
-		return nil
-	}
-	return connutil.TryCloseWrite(c.Conn)
-}
+func (c *peekConn) CloseWrite() error { return connutil.TryCloseWrite(c.Conn) }
 
-func (c *PeekConn) CloseRead() error {
-	if c == nil {
-		return nil
-	}
-	return connutil.TryCloseRead(c.Conn)
-}
+func (c *peekConn) CloseRead() error { return connutil.TryCloseRead(c.Conn) }
 
-func (c *PeekConn) Read(p []byte) (n int, err error) {
+func (c *peekConn) Read(p []byte) (int, error) {
 	if len(c.peeked) > 0 {
-		n = copy(p, c.peeked)
+		n := copy(p, c.peeked)
 		c.peeked = c.peeked[n:]
 		return n, nil
-	}
-	if c.Conn == nil {
-		return 0, io.EOF
 	}
 	return c.Conn.Read(p)
 }
@@ -167,7 +155,7 @@ func handleMixedConn(c net.Conn, cfg *config.Config, routeMgrs *routeManagers, d
 		return
 	}
 
-	pConn := &PeekConn{Conn: c, peeked: buf}
+	pConn := &peekConn{Conn: c, peeked: buf}
 
 	switch buf[0] {
 	case 0x05:
