@@ -201,7 +201,7 @@ func handleBenchmarkTunnelConn(raw net.Conn, cfg *config.Config, tables []*sudok
 }
 
 func handleBenchmarkSudokuConn(raw net.Conn, cfg *config.Config, tables []*sudoku.Table, dialTarget func(string) (net.Conn, error)) {
-	conn, _, err := tunnel.HandshakeAndUpgradeWithTablesMeta(raw, cfg, tables)
+	conn, _, err := tunnel.ServerHandshake(raw, cfg, tables)
 	if err != nil {
 		_ = raw.Close()
 		return

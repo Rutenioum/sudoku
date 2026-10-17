@@ -65,7 +65,7 @@ func idleTunnelFixture(tb testing.TB, onIdle func(net.Conn)) *StandardDialer {
 				return
 			}
 			go func() {
-				sConn, _, err := HandshakeAndUpgradeWithTablesMeta(c, cfg, []*sudoku.Table{table})
+				sConn, _, err := ServerHandshake(c, cfg, []*sudoku.Table{table})
 				if err != nil {
 					_ = c.Close()
 					return

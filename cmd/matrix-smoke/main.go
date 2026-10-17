@@ -435,7 +435,7 @@ func (s *serverHarness) handleConn(rawConn net.Conn) {
 
 func (s *serverHarness) handleSudokuConn(handshakeConn net.Conn, rawConn net.Conn, cfg *config.Config, allowFallback bool) {
 	s.handshakes.Add(1)
-	tunnelConn, _, err := tunnel.HandshakeAndUpgradeWithTablesMeta(handshakeConn, cfg, s.tables)
+	tunnelConn, _, err := tunnel.ServerHandshake(handshakeConn, cfg, s.tables)
 	if err != nil {
 		if s.verbose {
 			fmt.Fprintf(os.Stderr, "server handshake error: %T: %v\n", err, err)

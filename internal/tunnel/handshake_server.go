@@ -77,9 +77,9 @@ func probeHandshakeBytes(probe []byte, cfg *config.Config, table *sudoku.Table, 
 	return checkClientHelloSkew(ch, time.Now())
 }
 
-// HandshakeAndUpgradeWithTablesMeta is like HandshakeAndUpgradeWithTables but also returns handshake metadata
+// ServerHandshake is like HandshakeAndUpgradeWithTables but also returns handshake metadata
 // that can be used for multi-user accounting (e.g., per-split-private-key identification).
-func HandshakeAndUpgradeWithTablesMeta(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Table) (net.Conn, *HandshakeMeta, error) {
+func ServerHandshake(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Table) (net.Conn, *HandshakeMeta, error) {
 	if rawConn == nil {
 		return nil, nil, fmt.Errorf("nil conn")
 	}

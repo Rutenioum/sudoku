@@ -77,7 +77,7 @@ func TestSudokuTunnel_MuxDialerRawTCP(t *testing.T) {
 		}
 		defer raw.Close()
 
-		sConn, _, err := HandshakeAndUpgradeWithTablesMeta(raw, &serverCfg, []*sudoku.Table{table})
+		sConn, _, err := ServerHandshake(raw, &serverCfg, []*sudoku.Table{table})
 		if err != nil {
 			serverErr <- err
 			return
@@ -203,7 +203,7 @@ func TestMuxDialer_MaintainReconnectsClosedSession(t *testing.T) {
 				serverErr <- err
 				return
 			}
-			sConn, _, err := HandshakeAndUpgradeWithTablesMeta(raw, &serverCfg, []*sudoku.Table{table})
+			sConn, _, err := ServerHandshake(raw, &serverCfg, []*sudoku.Table{table})
 			if err != nil {
 				_ = raw.Close()
 				serverErr <- err

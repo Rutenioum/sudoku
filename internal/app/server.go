@@ -171,7 +171,7 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 	}
 
 	// Use Tunnel Abstraction for Handshake and Upgrade
-	tunnelConn, meta, err := tunnel.HandshakeAndUpgradeWithTablesMeta(handshakeConn, cfg, tables)
+	tunnelConn, meta, err := tunnel.ServerHandshake(handshakeConn, cfg, tables)
 	if err != nil {
 		if suspErr, ok := err.(*tunnel.SuspiciousError); ok {
 			logx.Warnf("Security", "Suspicious connection: %v", suspErr.Err)

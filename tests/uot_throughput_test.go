@@ -64,7 +64,7 @@ func newUoTBenchTunnel(t *testing.T, pure bool) (*tunnel.StandardDialer, func())
 				return
 			}
 			go func() {
-				conn, _, err := tunnel.HandshakeAndUpgradeWithTablesMeta(raw, srvCfg, tables)
+				conn, _, err := tunnel.ServerHandshake(raw, srvCfg, tables)
 				if err != nil {
 					_ = raw.Close()
 					return
