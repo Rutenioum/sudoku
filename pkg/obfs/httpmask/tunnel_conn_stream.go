@@ -63,7 +63,7 @@ func (c *streamSplitConn) closeWithError(err error) error {
 		c.cancel()
 	}
 
-	bestEffortCloseSession(c.client, c.closeURL, c.headerHost, TunnelModeStream)
+	_ = sendSessionControl(c.client, c.closeURL, c.headerHost, TunnelModeStream)
 	return nil
 }
 

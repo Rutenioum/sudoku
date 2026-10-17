@@ -390,9 +390,6 @@ func dialSession(ctx context.Context, serverAddress string, opts TunnelDialOptio
 		return nil, fmt.Errorf("%s authorize failed: %w", mode, err)
 	}
 	token := authResp.token
-	if token == "" {
-		return nil, fmt.Errorf("%s authorize empty token", mode)
-	}
 	if opts.EarlyHandshake != nil && len(authResp.earlyPayload) > 0 && opts.EarlyHandshake.HandleResponse != nil {
 		if err := opts.EarlyHandshake.HandleResponse(authResp.earlyPayload); err != nil {
 			return nil, err
@@ -428,11 +425,8 @@ func sendSessionControl(client *http.Client, controlURL, headerHost string, mode
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var (
-		lastErr error
-		backoff = 50 * time.Millisecond
-	)
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	backoff := 50 * time.Millisecond
+	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(closeCtx, http.MethodPost, controlURL, nil)
 		if err != nil {
 			return err
@@ -442,7 +436,6 @@ func sendSessionControl(client *http.Client, controlURL, headerHost string, mode
 
 		resp, err := client.Do(req)
 		if err != nil {
-			lastErr = err
 			if closeCtx.Err() == nil && (isDialError(err) || isRetryableHTTPTransportError(err) || errors.Is(err, context.DeadlineExceeded)) && attempt+1 < maxAttempts {
 				if err := waitRetry(closeCtx.Done(), nil, backoff); err != nil {
 					return err
@@ -452,10 +445,6 @@ func sendSessionControl(client *http.Client, controlURL, headerHost string, mode
 			}
 			return err
 		}
-		if resp == nil {
-			lastErr = io.ErrUnexpectedEOF
-			continue
-		}
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4*1024))
 		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
@@ -464,7 +453,6 @@ func sendSessionControl(client *http.Client, controlURL, headerHost string, mode
 			if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 				return nil
 			}
-			lastErr = statusError(resp)
 			if isRetryableStatusCode(resp.StatusCode) && attempt+1 < maxAttempts {
 				if err := waitRetry(closeCtx.Done(), nil, backoff); err != nil {
 					return err
@@ -472,18 +460,10 @@ func sendSessionControl(client *http.Client, controlURL, headerHost string, mode
 				backoff *= 2
 				continue
 			}
-			return lastErr
+			return statusError(resp)
 		}
 		return nil
 	}
-	if lastErr == nil {
-		lastErr = errors.New("session control failed")
-	}
-	return lastErr
-}
-
-func bestEffortCloseSession(client *http.Client, closeURL, headerHost string, mode TunnelMode) {
-	_ = sendSessionControl(client, closeURL, headerHost, mode)
 }
 
 func normalizeHTTPDialTarget(serverAddress string, tlsEnabled bool, hostOverride string) (scheme, urlHost, dialAddr, serverName string, err error) {

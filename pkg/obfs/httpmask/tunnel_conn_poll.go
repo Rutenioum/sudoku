@@ -53,7 +53,7 @@ func (c *pollConn) closeWithError(err error) error {
 	if c.cancel != nil {
 		c.cancel()
 	}
-	bestEffortCloseSession(c.client, c.closeURL, c.headerHost, TunnelModePoll)
+	_ = sendSessionControl(c.client, c.closeURL, c.headerHost, TunnelModePoll)
 	return nil
 }
 
