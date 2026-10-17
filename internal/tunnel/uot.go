@@ -42,8 +42,6 @@ type UoTDialer interface {
 	DialUDPOverTCP() (net.Conn, error)
 }
 
-var uotWritePool = sync.Pool{New: func() any { b := make([]byte, 0, 2048); return &b }}
-
 // appendUoTAddr appends the SOCKS5-style encoding of addr (host:port) to dst.
 func appendUoTAddr(dst []byte, addr string) ([]byte, error) {
 	if ap, err := netip.ParseAddrPort(addr); err == nil {
@@ -68,42 +66,6 @@ func appendUoTAddrPort(dst []byte, ap netip.AddrPort) []byte {
 		dst = append(dst, v[:]...)
 	}
 	return binary.BigEndian.AppendUint16(dst, ap.Port())
-}
-
-func writeUoTFrame(w io.Writer, appendAddr func([]byte) ([]byte, error), payload []byte) error {
-	if len(payload) > int(^uint16(0)) {
-		return fmt.Errorf("payload too large: %d", len(payload))
-	}
-	bp := uotWritePool.Get().(*[]byte)
-	buf := (*bp)[:4]
-	buf, err := appendAddr(buf)
-	if err != nil {
-		*bp = buf[:0]
-		uotWritePool.Put(bp)
-		return fmt.Errorf("encode address: %w", err)
-	}
-	addrLen := len(buf) - 4
-	if addrLen > int(^uint16(0)) {
-		*bp = buf[:0]
-		uotWritePool.Put(bp)
-		return fmt.Errorf("address too long: %d", addrLen)
-	}
-	binary.BigEndian.PutUint16(buf[:2], uint16(addrLen))
-	binary.BigEndian.PutUint16(buf[2:4], uint16(len(payload)))
-	buf = append(buf, payload...)
-
-	// A single write keeps the frame in one record and atomic w.r.t. concurrent writers.
-	err = connutil.WriteFull(w, buf)
-	if cap(buf) <= 128*1024 {
-		*bp = buf[:0]
-		uotWritePool.Put(bp)
-	}
-	return err
-}
-
-// WriteUoTDatagram sends a single UDP datagram frame over the reliable tunnel.
-func WriteUoTDatagram(w io.Writer, addr string, payload []byte) error {
-	return writeUoTFrame(w, func(b []byte) ([]byte, error) { return appendUoTAddr(b, addr) }, payload)
 }
 
 const maxUoTPending = 256 * 1024
@@ -188,16 +150,13 @@ func (u *UoTWriter) enqueue(appendAddr func([]byte) ([]byte, error), payload []b
 	start := len(u.pending)
 	buf := append(u.pending, 0, 0, 0, 0)
 	buf, err := appendAddr(buf)
-	addrLen := len(buf) - start - 4
-	if err != nil || addrLen > int(^uint16(0)) {
+	if err != nil {
 		u.pending = buf[:start]
 		u.mu.Unlock()
-		if err == nil {
-			err = fmt.Errorf("address too long: %d", addrLen)
-		}
 		return fmt.Errorf("encode address: %w", err)
 	}
-	binary.BigEndian.PutUint16(buf[start:], uint16(addrLen))
+	// An encoded address is at most 1+1+255+2 bytes, so its length always fits the u16 field.
+	binary.BigEndian.PutUint16(buf[start:], uint16(len(buf)-start-4))
 	binary.BigEndian.PutUint16(buf[start+2:], uint16(len(payload)))
 	u.pending = append(buf, payload...)
 	u.mu.Unlock()
@@ -231,11 +190,8 @@ func (f *uotFrameReader) next() (addr, payload []byte, err error) {
 	}
 	addrLen := int(binary.BigEndian.Uint16(header[:2]))
 	payloadLen := int(binary.BigEndian.Uint16(header[2:]))
-	if addrLen <= 0 || addrLen > maxUoTPayload {
+	if addrLen == 0 {
 		return nil, nil, fmt.Errorf("invalid address length: %d", addrLen)
-	}
-	if payloadLen > maxUoTPayload {
-		return nil, nil, fmt.Errorf("invalid payload length: %d", payloadLen)
 	}
 	n := addrLen + payloadLen
 	if cap(f.buf) < n {

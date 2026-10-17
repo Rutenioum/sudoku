@@ -22,28 +22,39 @@ package tunnel
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"net"
 	"testing"
 	"time"
 )
 
-func TestUoTDatagram_RoundTrip(t *testing.T) {
-	var buf bytes.Buffer
-	addr := "example.com:53"
-	payload := []byte("hello uot")
+func TestUoTWriter_RoundTrip(t *testing.T) {
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pr.Close() })
+	w := NewUoTWriter(pw, nil)
+	t.Cleanup(w.Close)
 
-	if err := WriteUoTDatagram(&buf, addr, payload); err != nil {
-		t.Fatalf("WriteUoTDatagram error: %v", err)
+	cases := []struct {
+		addr    string
+		payload []byte
+	}{
+		{"example.com:53", []byte("hello uot")},
+		{"1.2.3.4:5000", nil},
+		{"[2001:db8::1]:443", bytes.Repeat([]byte{0xab}, 1200)},
 	}
-	gotAddr, gotPayload, err := ReadUoTDatagram(&buf)
-	if err != nil {
-		t.Fatalf("ReadUoTDatagram error: %v", err)
+	for _, c := range cases {
+		if err := w.WriteDatagram(c.addr, c.payload); err != nil {
+			t.Fatalf("WriteDatagram(%s): %v", c.addr, err)
+		}
 	}
-	if gotAddr != addr {
-		t.Fatalf("addr mismatch: got %q want %q", gotAddr, addr)
-	}
-	if !bytes.Equal(gotPayload, payload) {
-		t.Fatalf("payload mismatch: got %q want %q", gotPayload, payload)
+	for _, c := range cases {
+		addr, payload, err := ReadUoTDatagram(pr)
+		if err != nil {
+			t.Fatalf("ReadUoTDatagram: %v", err)
+		}
+		if addr != c.addr || !bytes.Equal(payload, c.payload) {
+			t.Fatalf("got (%q, %d bytes), want (%q, %d bytes)", addr, len(payload), c.addr, len(c.payload))
+		}
 	}
 }
 

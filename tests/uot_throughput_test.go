@@ -199,7 +199,9 @@ func benchUDPDown(t *testing.T, d *tunnel.StandardDialer, dur time.Duration, siz
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if err := tunnel.WriteUoTDatagram(c, src.LocalAddr().String(), []byte("hi")); err != nil {
+	uw := tunnel.NewUoTWriter(c, nil)
+	defer uw.Close()
+	if err := uw.WriteDatagram(src.LocalAddr().String(), []byte("hi")); err != nil {
 		t.Fatal(err)
 	}
 	var n, pkts int64
