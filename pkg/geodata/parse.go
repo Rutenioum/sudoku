@@ -20,7 +20,6 @@ with this application without prior consent.
 package geodata
 
 import (
-	"bytes"
 	"encoding/binary"
 	"maps"
 	"net"
@@ -29,8 +28,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
-
-var payloadKey = []byte("payload")
 
 type ruleBuildState struct {
 	ipv4    []IPRange
@@ -73,13 +70,13 @@ func newRuleBuildState() *ruleBuildState {
 }
 
 // parseRuleSource loads a YAML "payload:" document or, failing that, one rule per line.
-func parseRuleSource(body []byte, state *ruleBuildState) bool {
+func parseRuleSource(body string, state *ruleBuildState) bool {
 	// A payload key must spell "payload"; skipping YAML otherwise spares plain lists a full parse.
-	if bytes.Contains(body, payloadKey) {
+	if strings.Contains(body, "payload") {
 		var doc struct {
 			Payload []string `yaml:"payload"`
 		}
-		if err := yaml.Unmarshal(body, &doc); err == nil && len(doc.Payload) > 0 {
+		if err := yaml.Unmarshal([]byte(body), &doc); err == nil && len(doc.Payload) > 0 {
 			parsed := false
 			for _, rule := range doc.Payload {
 				if parseRule(rule, state) {
@@ -91,7 +88,7 @@ func parseRuleSource(body []byte, state *ruleBuildState) bool {
 	}
 
 	parsed := false
-	for text := string(body); text != ""; {
+	for text := body; text != ""; {
 		var line string
 		line, text, _ = strings.Cut(text, "\n")
 		if parseRule(line, state) {

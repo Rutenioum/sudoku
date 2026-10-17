@@ -149,7 +149,7 @@ func TestParseRuleSource(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			state := newRuleBuildState()
-			ok := parseRuleSource([]byte(tc.body), state)
+			ok := parseRuleSource(tc.body, state)
 			if ok != tc.wantOK {
 				t.Fatalf("parseRuleSource ok = %v, want %v", ok, tc.wantOK)
 			}

@@ -20,11 +20,11 @@ with this application without prior consent.
 package geodata
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
@@ -51,12 +51,12 @@ func (m *Manager) downloadAndParse(url string, state *ruleBuildState) bool {
 		refreshErr = errors.New("response contains no supported rules")
 	}
 
-	body, cacheErr := m.readRuleCache(url)
+	cached, cacheErr := m.readRuleCache(url)
 	if cacheErr != nil {
 		logx.Warnf("GeoData", "Failed to refresh %s: %v; cached rules unavailable: %v", url, refreshErr, cacheErr)
 		return false
 	}
-	if !parseRuleSource(body, state) {
+	if !parseRuleSource(string(cached), state) {
 		logx.Warnf("GeoData", "Failed to refresh %s: %v; cached rules are invalid", url, refreshErr)
 		return false
 	}
@@ -64,29 +64,33 @@ func (m *Manager) downloadAndParse(url string, state *ruleBuildState) bool {
 	return true
 }
 
-func downloadRuleSource(url string) ([]byte, error) {
+// downloadRuleSource returns the body as a string so the rules parsed from it can alias it.
+func downloadRuleSource(url string) (string, error) {
 	client := newRuleDownloadClient()
 	// Each download builds its own transport; do not leave its connections idling.
 	defer client.CloseIdleConnections()
 	resp, err := client.Get(url)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("unexpected HTTP status %s", resp.Status)
+		return "", fmt.Errorf("unexpected HTTP status %s", resp.Status)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRuleSourceBytes+1))
-	if err != nil {
-		return nil, err
+	var body strings.Builder
+	if n := resp.ContentLength; n > 0 && n <= maxRuleSourceBytes {
+		body.Grow(int(n))
 	}
-	if len(body) > maxRuleSourceBytes {
-		return nil, fmt.Errorf("response larger than %d bytes", maxRuleSourceBytes)
+	if _, err := io.Copy(&body, io.LimitReader(resp.Body, maxRuleSourceBytes+1)); err != nil {
+		return "", err
 	}
-	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, errors.New("empty response")
+	if body.Len() > maxRuleSourceBytes {
+		return "", fmt.Errorf("response larger than %d bytes", maxRuleSourceBytes)
 	}
-	return body, nil
+	if strings.TrimSpace(body.String()) == "" {
+		return "", errors.New("empty response")
+	}
+	return body.String(), nil
 }

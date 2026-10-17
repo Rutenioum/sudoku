@@ -62,7 +62,7 @@ func (m *Manager) readRuleCache(url string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-func (m *Manager) writeRuleCache(url string, body []byte) error {
+func (m *Manager) writeRuleCache(url, body string) error {
 	path, err := m.ruleCachePath(url)
 	if err != nil {
 		return err
@@ -85,7 +85,7 @@ func (m *Manager) writeRuleCache(url string, body []byte) error {
 	if err := tmp.Chmod(0o600); err != nil {
 		return err
 	}
-	if _, err := tmp.Write(body); err != nil {
+	if _, err := tmp.WriteString(body); err != nil {
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
