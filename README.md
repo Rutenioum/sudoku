@@ -91,6 +91,14 @@ Recommended setup (two-layer Sudoku):
 This makes the client appear to “connect to the outer server”, while the actual handshake and data tunnel are completed by the inner server. The outer layer only replays the already-read prefix bytes to the inner layer in order, then forwards traffic in both directions.
 (~~Of course, the middle jump box is also a full Sudoku server.~~)
 
+### Multi-User Control
+Add a `users` whitelist to the server config to run one server for many people. Each entry is identified by the user hash the client already sends in the handshake, so no protocol change is involved:
+*   **Whitelist**: a connection whose hash is not listed is rejected even if its handshake succeeds.
+*   **Per-user limits**: `bandwidth` (Mbps, applied to the payload the client actually perceives, per direction), `data` (GB of wire traffic, tx+rx), and `blocked`.
+*   **Readable logs**: set an `alias` (an email, a nickname) and logs show `[User:alias]` instead of a hash.
+
+See [configs/README.md](./configs/README.md#users-server-whitelist) for the fields.
+
 ### Drawbacks (TODO)
 1.  **Packet Format**: TCP native; UDP is relayed via UoT (UDP-over-TCP) without exposing a raw UDP listener.
 2.  **Client Proxy**: Unless you use the official GUI clients listed above, the bare core only supports SOCKS5/HTTP. No native TUN.

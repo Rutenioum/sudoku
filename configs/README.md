@@ -190,3 +190,25 @@ Raw TCP forwarding (one per server entry):
 
 Mainland China example:
 - The default `configs/client.config.json` uses `ChinaMaxNoIP + CN CIDR v4/v6`, plus `!https://gcore.jsdelivr.net/gh/TG-Twilight/AWAvenue-Ads-Rule@main/Filters/AWAvenue-Ads-Rule-Clash.yaml` as a visible reject-rule example.
+
+## Users (server whitelist)
+
+Add `users` to the **server** config to switch to whitelist mode: a connection whose handshake user hash is not listed is rejected, even if the handshake itself succeeds.
+
+```json
+"users": [
+  { "alias": "alice@example.com", "key": "CLIENT_PRIVATE_KEY_HEX", "bandwidth": [20, 5], "data": 100 },
+  { "key": "8531a778fe7c" },
+  { "alias": "bob", "key": "0123456789abcdef", "blocked": true }
+]
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `key` | yes | Either a client private key (hex, 64 or 128 chars), or a prefix (8–16 hex chars) of the user hash `sha256(privateKey bytes)[:8]` the client sends in the handshake. The two are told apart by length. |
+| `alias` | no | Name shown in logs as `[User:alias]`. Defaults to the 16-char user hash (never the private key). |
+| `bandwidth` | no | `[a, b]` in Mbps, `0` = unlimited. `a` is server→client (the client's download), `b` is client→server (the client's upload). Applied to the decoded payload, i.e. what the client perceives, not the Sudoku wire rate. Shared by all connections of the user. |
+| `data` | no | Total quota in GB (1 GB = 10^9 bytes), `0` = unlimited. Counts wire bytes in both directions across all of the user's connections; once exhausted, existing connections are closed and new ones rejected. Usage is kept in memory and resets when the server restarts. |
+| `blocked` | no | `true` rejects this user. |
+
+Without `users`, behaviour is unchanged (logs show the raw hash).

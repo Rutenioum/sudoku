@@ -239,7 +239,7 @@ func (c *Config) Finalize() error {
 		c.ProxyMode = normalizeProxyMode(c.ProxyMode)
 	}
 
-	return nil
+	return c.finalizeUsers()
 }
 
 func (c *Config) HTTPMaskTunnelEnabled() bool {

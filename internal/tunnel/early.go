@@ -25,6 +25,10 @@ type EarlyCodecConfig struct {
 	PaddingMin         int
 	PaddingMax         int
 	PackedUplink       bool
+
+	// WireWrap, server side only, wraps the raw stream below the sudoku/crypto layers
+	// so wire bytes can be accounted per user.
+	WireWrap func(userHash string, raw net.Conn) net.Conn
 }
 
 type EarlyClientState struct {
@@ -325,6 +329,9 @@ func processEarlyClientPayloadForTable(cfg EarlyCodecConfig, tables []*sudoku.Ta
 func (s *EarlyServerState) WrapConn(raw net.Conn) (net.Conn, error) {
 	if s == nil {
 		return nil, fmt.Errorf("nil server state")
+	}
+	if s.cfg.WireWrap != nil {
+		raw = s.cfg.WireWrap(s.UserHash, raw)
 	}
 	obfsConn := buildEarlyServerObfsConn(raw, s.cfg, s.table, s.uplinkMode)
 	rc, err := crypto.NewRecordConn(obfsConn, s.cfg.AEAD, s.sessionS2C, s.sessionC2S)

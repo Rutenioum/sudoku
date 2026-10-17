@@ -338,6 +338,7 @@ type uotClientSession struct {
 	ctrlConn  net.Conn
 	udpConn   *net.UDPConn
 	uotConn   net.Conn
+	uotWriter *tunnel.UoTWriter
 	udpNet    string
 	cfg       *config.Config
 	routeMgrs *routeManagers
@@ -357,7 +358,7 @@ type uotClientSession struct {
 }
 
 func newUoTClientSession(ctrl net.Conn, udpConn *net.UDPConn, uotConn net.Conn, udpNet string, cfg *config.Config, routeMgrs *routeManagers, resolver *dnsutil.Resolver) *uotClientSession {
-	return &uotClientSession{
+	sess := &uotClientSession{
 		ctrlConn:        ctrl,
 		udpConn:         udpConn,
 		uotConn:         uotConn,
@@ -372,6 +373,8 @@ func newUoTClientSession(ctrl net.Conn, udpConn *net.UDPConn, uotConn net.Conn, 
 		logTTL:          30 * time.Second,
 		logOnce:         newTTLSet(1024),
 	}
+	sess.uotWriter = tunnel.NewUoTWriter(uotConn, func(error) { sess.close() })
+	return sess
 }
 
 func (s *uotClientSession) run() {
@@ -387,6 +390,7 @@ func (s *uotClientSession) run() {
 func (s *uotClientSession) close() {
 	s.closeOnce.Do(func() {
 		close(s.closed)
+		s.uotWriter.Close()
 		_ = s.udpConn.Close()
 		_ = s.uotConn.Close()
 		_ = s.ctrlConn.Close()
@@ -468,7 +472,7 @@ func (s *uotClientSession) pipeClientToServer() {
 		}
 
 		if shouldProxy {
-			if err := tunnel.WriteUoTDatagram(s.uotConn, destAddr, payload); err != nil {
+			if err := s.uotWriter.WriteDatagram(destAddr, payload); err != nil {
 				s.close()
 				cancel()
 				return

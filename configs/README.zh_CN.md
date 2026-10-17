@@ -190,3 +190,25 @@ ssh -p 2222 127.0.0.1
 
 中国大陆适用举例：
 - 模板 `configs/client.config.json` 默认给了一组 PAC 规则 URL（ChinaMaxNoIP + CN CIDR v4/v6），并额外演示了 `!https://gcore.jsdelivr.net/gh/TG-Twilight/AWAvenue-Ads-Rule@main/Filters/AWAvenue-Ads-Rule-Clash.yaml` 这种 reject 规则写法。
+
+## Users(服务端白名单)
+
+在**服务端**配置里加入 `users` 即启用白名单:握手携带的用户哈希不在列表中的连接会被拒绝(即使握手本身成功)。
+
+```json
+"users": [
+  { "alias": "alice@example.com", "key": "客户端私钥HEX", "bandwidth": [20, 5], "data": 100 },
+  { "key": "8531a778fe7c" },
+  { "alias": "bob", "key": "0123456789abcdef", "blocked": true }
+]
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `key` | 是 | 客户端私钥(hex,64 或 128 字符),或握手中用户哈希 `sha256(私钥字节)[:8]` 的前缀(8–16 个 hex 字符),按长度区分。 |
+| `alias` | 否 | 日志中显示为 `[User:alias]`;不填则为 16 位用户哈希(不会使用私钥)。 |
+| `bandwidth` | 否 | `[a, b]`,单位 Mbps,`0` 不限速。`a` 为服务端→客户端(即客户端下行),`b` 为客户端→服务端(即客户端上行)。限制的是解码后的实际负载速率(客户端可感知带宽),不是 Sudoku wire 速率;同一用户的所有连接共享额度。 |
+| `data` | 否 | 总流量,单位 GB(1 GB = 10^9 字节),`0` 不限制。按 wire 字节双向累计、该用户所有连接共用;用尽后现有连接被断开、新连接被拒绝。用量保存在内存,服务端重启后清零。 |
+| `blocked` | 否 | `true` 则拒绝该用户。 |
+
+不配置 `users` 时行为不变(日志仍显示原始哈希)。

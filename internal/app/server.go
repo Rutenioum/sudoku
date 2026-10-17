@@ -34,30 +34,39 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/internal/protocol"
 	"github.com/SUDOKU-ASCII/sudoku/internal/reverse"
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
+	"github.com/SUDOKU-ASCII/sudoku/internal/users"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/logx"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/httpmask"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
-// logUserInfo logs an info message, prepending [User:hash] when userHash is non-empty.
-func logUserInfo(tag, userHash, format string, args ...interface{}) {
-	if userHash != "" {
-		format = "[User:" + userHash + "] " + format
+// logUserInfo logs an info message, prepending [User:label] when label is non-empty.
+func logUserInfo(tag, label, format string, args ...interface{}) {
+	if label != "" {
+		format = "[User:" + label + "] " + format
 	}
 	logx.Infof(tag, format, args...)
 }
 
-// logUserWarn logs a warning message, prepending [User:hash] when userHash is non-empty.
-func logUserWarn(tag, userHash, format string, args ...interface{}) {
-	if userHash != "" {
-		format = "[User:" + userHash + "] " + format
+// logUserWarn logs a warning message, prepending [User:label] when label is non-empty.
+func logUserWarn(tag, label, format string, args ...interface{}) {
+	if label != "" {
+		format = "[User:" + label + "] " + format
 	}
 	logx.Warnf(tag, format, args...)
 }
 
 func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 	logx.InstallStd()
+
+	userReg, err := users.NewRegistry(cfg.Users)
+	if err != nil {
+		logx.Fatalf("Server", "%v", err)
+	}
+	if userReg != nil {
+		logx.Infof("Server", "User whitelist enabled (%d users)", len(cfg.Users))
+	}
 
 	// Listen on TCP port.
 	l, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.LocalPort))
@@ -90,6 +99,12 @@ func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 				EnablePureDownlink: cfg.EnablePureDownlink,
 				PaddingMin:         cfg.PaddingMin,
 				PaddingMax:         cfg.PaddingMax,
+				WireWrap: func(userHash string, raw net.Conn) net.Conn {
+					if u := userReg.Lookup(userHash); u != nil && !u.Blocked {
+						return u.WrapWire(raw)
+					}
+					return raw
+				},
 			}, tables, tunnel.AllowHandshakeReplay),
 			PassThroughOnReject: func() bool {
 				if cfg.SuspiciousAction == "silent" {
@@ -122,11 +137,11 @@ func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 				continue
 			}
 		}
-		go handleServerConn(c, cfg, tables, tunnelSrv, revMgr)
+		go handleServerConn(c, cfg, tables, tunnelSrv, revMgr, userReg)
 	}
 }
 
-func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Table, tunnelSrv *httpmask.TunnelServer, revMgr *reverse.Manager) {
+func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Table, tunnelSrv *httpmask.TunnelServer, revMgr *reverse.Manager, userReg *users.Registry) {
 	if tunnelSrv != nil {
 		res, c, err := tunnelSrv.HandleConn(rawConn)
 		if err != nil {
@@ -140,7 +155,7 @@ func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Tab
 		case httpmask.HandleStartTunnel:
 			inner := *cfg
 			inner.HTTPMask.Disable = true
-			handleSudokuServerConn(c, rawConn, &inner, tables, false, revMgr)
+			handleSudokuServerConn(c, rawConn, &inner, tables, false, revMgr, userReg)
 			return
 		case httpmask.HandlePassThrough:
 			if r, ok := c.(interface{ IsHTTPMaskRejected() bool }); ok && r.IsHTTPMaskRejected() {
@@ -149,7 +164,7 @@ func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Tab
 				handler.HandleSuspicious(c, rawConn, cfg)
 				return
 			}
-			handleSudokuServerConn(c, rawConn, cfg, tables, true, revMgr)
+			handleSudokuServerConn(c, rawConn, cfg, tables, true, revMgr, userReg)
 			return
 		default:
 			rawConn.Close()
@@ -157,10 +172,19 @@ func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Tab
 		}
 	}
 
-	handleSudokuServerConn(rawConn, rawConn, cfg, tables, true, revMgr)
+	handleSudokuServerConn(rawConn, rawConn, cfg, tables, true, revMgr, userReg)
 }
 
-func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *config.Config, tables []*sudoku.Table, allowFallback bool, revMgr *reverse.Manager) {
+func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *config.Config, tables []*sudoku.Table, allowFallback bool, revMgr *reverse.Manager, userReg *users.Registry) {
+	// Early-handshake conns are already wire-wrapped inside WrapConn; everything else is counted here.
+	var wire *users.WireConn
+	if userReg != nil {
+		if _, early := httpmask.EarlyHandshakeUserHash(handshakeConn); !early {
+			wire = users.NewWireConn(handshakeConn)
+			handshakeConn = wire
+		}
+	}
+
 	// Use Tunnel Abstraction for Handshake and Upgrade
 	tunnelConn, meta, err := tunnel.HandshakeAndUpgradeWithTablesMeta(handshakeConn, cfg, tables)
 	if err != nil {
@@ -185,6 +209,28 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 	if meta != nil {
 		userHash = meta.UserHash
 	}
+	label := userHash
+	if userReg != nil {
+		user := userReg.Lookup(userHash)
+		switch {
+		case user == nil:
+			logx.Warnf("Server", "[User:%s] rejected: not in users whitelist", userHash)
+		case user.Blocked:
+			logx.Warnf("Server", "[User:%s] rejected: blocked", user.Alias)
+		case user.Exceeded():
+			logx.Warnf("Server", "[User:%s] rejected: data quota exceeded", user.Alias)
+		default:
+			label = user.Alias
+			if wire != nil {
+				wire.Bind(user)
+			}
+			tunnelConn = user.WrapPayload(tunnelConn)
+		}
+		if user == nil || user.Blocked || user.Exceeded() {
+			_ = tunnelConn.Close()
+			return
+		}
+	}
 
 	// Read the first KIP control message to detect session type (UoT / Mux / Reverse / normal).
 	var msg *tunnel.KIPMessage
@@ -203,22 +249,22 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 
 	switch msg.Type {
 	case tunnel.KIPTypeStartUoT:
-		logUserInfo("Server/UoT", userHash, "session start")
+		logUserInfo("Server/UoT", label, "session start")
 		if err := tunnel.HandleUoTServer(tunnelConn); err != nil {
-			logUserWarn("Server/UoT", userHash, "session end: %v", err)
+			logUserWarn("Server/UoT", label, "session end: %v", err)
 		} else {
-			logUserInfo("Server/UoT", userHash, "session end")
+			logUserInfo("Server/UoT", label, "session end")
 		}
 		return
 	case tunnel.KIPTypeStartMux:
-		logUserInfo("Server/Mux", userHash, "session start")
+		logUserInfo("Server/Mux", label, "session start")
 		logConnect := func(addr string) {
-			logUserInfo("Server/Mux", userHash, "Connecting to %s", addr)
+			logUserInfo("Server/Mux", label, "Connecting to %s", addr)
 		}
 		if err := tunnel.HandleMuxServer(tunnelConn, logConnect); err != nil {
-			logUserWarn("Server/Mux", userHash, "session end: %v", err)
+			logUserWarn("Server/Mux", label, "session end: %v", err)
 		} else {
-			logUserInfo("Server/Mux", userHash, "session end")
+			logUserInfo("Server/Mux", label, "session end")
 		}
 		return
 	case tunnel.KIPTypeStartRev:
@@ -226,11 +272,11 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 			logx.Warnf("Server/Reverse", "reverse proxy not enabled (missing reverse.listen)")
 			return
 		}
-		logUserInfo("Server/Reverse", userHash, "session start")
+		logUserInfo("Server/Reverse", label, "session start")
 		if err := reverse.HandleServerSession(tunnelConn, userHash, revMgr, msg.Payload); err != nil {
-			logUserWarn("Server/Reverse", userHash, "session end: %v", err)
+			logUserWarn("Server/Reverse", label, "session end: %v", err)
 		} else {
-			logUserInfo("Server/Reverse", userHash, "session end")
+			logUserInfo("Server/Reverse", label, "session end")
 		}
 		return
 	case tunnel.KIPTypeOpenTCP:
@@ -240,7 +286,7 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 			return
 		}
 
-		logUserInfo("Server", userHash, "Connecting to %s", destAddrStr)
+		logUserInfo("Server", label, "Connecting to %s", destAddrStr)
 
 		target, err := net.DialTimeout("tcp", destAddrStr, 10*time.Second)
 		if err != nil {

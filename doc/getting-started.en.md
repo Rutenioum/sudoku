@@ -50,6 +50,8 @@ You can start from the template: `configs/server.config.json`.
 ```
 Tip: if you don’t have a decoy web server on `fallback_address`, set `"suspicious_action": "silent"` to drop suspicious connections instead.
 
+Sharing the server with other people? Add a `users` whitelist to give each person an alias, a speed limit, a data quota, or to block them; see [Users](./README.md#users-server-whitelist). Without it, anyone with a valid private key can connect.
+
 ## 5) Client config (`client.config.json`)
 You can start from the template: `configs/client.config.json`.
 ```json

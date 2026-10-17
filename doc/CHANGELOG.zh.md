@@ -1,5 +1,10 @@
 # 更新日志
 
+## 未发布（v0.5.2 开发中）
+- `users`: 服务端新增 `users` 白名单。按握手中的用户哈希识别用户（`key` 可填客户端私钥或 8–16 位哈希前缀，按长度区分），哈希不在列表中的连接即使握手成功也会被拒绝；每个用户可配置 `alias`（日志显示 `[User:alias]`）、`bandwidth`（`[服务端→客户端, 客户端→服务端]`，单位 Mbps，限制解码后的负载速率）、`data`（GB，按 wire 流量双向累计，用尽后断开并拒绝新连接）与 `blocked`。不配置 `users` 时行为不变，协议无改动。
+- `perf/uot`: UoT 每个数据报改为一次写入（原先 3 次写入、3 个 AEAD record），并新增批量写入队列：积压的数据报合并为大 record 发送，服务端与 SOCKS5 UDP 客户端共用。队列超过 256KB 时丢弃新数据报，行为与拥塞的 UDP 链路一致。本机基准中 packed 下行 UoT/TCP 由约 17% 提升到约 66%，其余方向约 76%–80%。wire 格式不变，新旧端互通。
+- `tests`: 新增 `users` 白名单在 no-httpmask、legacy、stream、poll、ws 下的端到端测试，以及 UoT 与 TCP 吞吐对比基准（`SUDOKU_UOT_BENCH=1`）。
+
 ## v0.5.0（2026-09-05）
 - `BREAKING/httpmask`: 非 WebSocket 的 `auto`、`stream`、`poll` 重构为 v0.5 session 上传序列协议。每个上传批次带单调递增序号；CDN 在服务端已收包后丢失 HTTP 响应时，客户端以同一序号和原始负载重试，服务端幂等确认而不重复写入。非 WS HTTPMask 的客户端和服务端必须同时升级到 v0.5.0；旧 v0.4.x 非 WS peer 会被明确拒绝。
 - `httpmask`: 每个 split session 只允许一个下行 pull 读取后端连接。新 pull 会有序接管旧 pull；下行数据仅在 HTTP 响应成功 flush 后确认，CDN reset、超时或连接替换不会丢弃尚未确认的数据。`auto/stream/poll` 的短暂网络错误改为持续、受限退避重连，避免固定重试次数耗尽后长时间断流。

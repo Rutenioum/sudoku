@@ -133,6 +133,8 @@ UoT sends datagrams over the reliable tunnel as:
 | `addr` | `addr_len` | bytes | SOCKS5-style address bytes |
 | `payload` | `payload_len` | bytes | UDP payload |
 
+Frames are self-delimiting and may be coalesced: a sender can put many frames into one write (one AEAD record), so a receiver must parse them as a stream and never assume one frame per record.
+
 ## How the Sudoku layer hides bytes (high-level)
 - Both sides deterministically generate the same mapping table from `key` (+ optional `custom_table`).
 - Each data byte is encoded into a small 4×4 Sudoku “puzzle hint” (a few clues) chosen from the table.
@@ -183,6 +185,31 @@ Routing modes (client):
 - `rule_urls: ["-https://..."]` / `["_https://..."]`: proxy-rule sources; matched domains use the proxy even if another rule source would direct them
 - `rule_urls: ["!https://..."]` or `["！https://..."]`: reject-rule sources; matched domains are blocked before any outbound connection is made
 - `global` and `direct` also load a hidden default reject list from `https://fastly.jsdelivr.net/gh/TG-Twilight/AWAvenue-Ads-Rule@main/Filters/AWAvenue-Ads-Rule-Clash.yaml`
+
+## Users (server whitelist)
+A server can restrict and meter its clients with a `users` array. Clients are identified by the 8-byte user hash in the ClientHello, `sha256(private key bytes)[:8]` (shown as 16 lowercase hex chars), so this needs no client or protocol change.
+
+```json
+{
+  "mode": "server",
+  "local_port": 8080,
+  "key": "MASTER_PUBLIC_KEY",
+  "users": [
+    { "alias": "alice@example.com", "key": "CLIENT_PRIVATE_KEY_HEX", "bandwidth": [20, 5], "data": 100 },
+    { "key": "8531a778fe7c" },
+    { "alias": "bob", "key": "0123456789abcdef", "blocked": true }
+  ]
+}
+```
+
+- `key` (required): a client private key (64 or 128 hex chars) or a user-hash prefix (8-16 hex chars); told apart by length. Duplicates are rejected at startup.
+- `alias`: the name logs show as `[User:alias]`; defaults to the user hash (never the private key).
+- `bandwidth`: `[server->client, client->server]` in Mbps, `0` = unlimited. It limits the decoded payload (what the client perceives), not the Sudoku wire rate, and is shared by all of a user's connections.
+- `data`: wire traffic quota in GB (10^9 bytes), tx+rx, `0` = unlimited. Once used up, existing connections are closed and new ones rejected. Usage lives in memory and resets on restart.
+- `blocked`: reject this user.
+- A hash that matches no entry is rejected after the handshake. Without `users`, nothing changes.
+
+Field reference: [configs/README.md](../configs/README.md#users-server-whitelist).
 
 ## Cloudflare CDN (Orange Cloud)
 Sudoku can run through a CDN/proxy only in real HTTP tunnel modes: `stream` / `poll` / `auto` (or `ws`). `legacy` mode is not CDN-compatible.
@@ -366,6 +393,8 @@ KIP 消息类型：
 | `addr` | `addr_len` | bytes | SOCKS5 风格地址字节 |
 | `payload` | `payload_len` | bytes | UDP 数据 |
 
+报文自带长度、可以合并发送:发送端可以把多个报文放进一次写入(同一个 AEAD record),接收端必须按字节流解析,不能假设一个 record 对应一个报文。
+
 ## 数独层如何“藏”字节（高层理解）
 - 双端会用相同的 `key`（+ 可选 `custom_table`）确定性生成同一张映射表。
 - 每个数据字节会被编码成一个很小的 4×4 数独“提示”（少量 clues），并从映射表中选取。
@@ -417,6 +446,31 @@ KIP 消息类型：
 - `rule_urls` 里的 `-https://...` / `_https://...`：proxy 规则源，命中域名即使也命中直连规则也会走代理
 - `rule_urls` 里的 `!https://...` / `！https://...`：reject 规则源，命中域名时在发起任何外连前直接拒绝
 - `global` 与 `direct` 也会隐式加载 `https://fastly.jsdelivr.net/gh/TG-Twilight/AWAvenue-Ads-Rule@main/Filters/AWAvenue-Ads-Rule-Clash.yaml` 作为默认去广告 reject 规则
+
+## Users（服务端白名单）
+服务端可以用 `users` 数组限制并计量客户端。用户由 ClientHello 中 8 字节的用户哈希识别,即 `sha256(私钥字节)[:8]`(显示为 16 位小写 hex),因此客户端和协议都无需改动。
+
+```json
+{
+  "mode": "server",
+  "local_port": 8080,
+  "key": "粘贴 Master Public Key",
+  "users": [
+    { "alias": "alice@example.com", "key": "客户端私钥HEX", "bandwidth": [20, 5], "data": 100 },
+    { "key": "8531a778fe7c" },
+    { "alias": "bob", "key": "0123456789abcdef", "blocked": true }
+  ]
+}
+```
+
+- `key`(必填):客户端私钥(64 或 128 个 hex 字符)或用户哈希前缀(8–16 个 hex 字符),按长度区分。重复项会在启动时报错。
+- `alias`:日志中显示为 `[User:alias]`;不填则为用户哈希(不会使用私钥)。
+- `bandwidth`:`[服务端→客户端, 客户端→服务端]`,单位 Mbps,`0` 不限速。限制的是解码后的负载速率(客户端可感知),不是 Sudoku wire 速率;同一用户的所有连接共享。
+- `data`:wire 流量额度,单位 GB(10^9 字节),双向累计,`0` 不限制。用尽后现有连接被断开、新连接被拒绝。用量保存在内存,重启清零。
+- `blocked`:拒绝该用户。
+- 哈希不匹配任何条目的连接会在握手后被拒绝;不配置 `users` 时行为不变。
+
+字段速查:[configs/README.zh_CN.md](../configs/README.zh_CN.md)。
 
 ## 过 Cloudflare CDN（小黄云）
 Sudoku 只有在真实 HTTP 隧道模式下才能过 CDN/代理：`stream` / `poll` / `auto`（或 `ws`）；`legacy` 模式不兼容 CDN。

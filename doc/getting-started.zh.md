@@ -51,6 +51,8 @@ go build -o sudoku ./cmd/sudoku-tunnel
 ```
 提示：如果你没有在 `fallback_address` 上准备诱饵网页服务，可以把 `"suspicious_action"` 设为 `"silent"`，对可疑连接直接丢弃。
 
+要和别人共用这台服务器？加上 `users` 白名单，就能给每个人设置别名、限速、流量额度，或者封禁，详见 [Users（服务端白名单）](./README.md#users服务端白名单)。不配置时，任何持有有效私钥的人都能连接。
+
 ## 5. 准备客户端配置（client.config.json）
 可直接从模板 `configs/client.config.json` 复制，把 `server_address` 改成你的服务器地址和端口，把 `key` 换成 Available Private Key：
 ```json
