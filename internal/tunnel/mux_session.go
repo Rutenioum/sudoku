@@ -52,6 +52,12 @@ const (
 	// single-tunnel large downloads while still staying well below the hard cap.
 	muxMaxDataPayload    = 128 * 1024
 	muxKeepaliveInterval = 15 * time.Second
+
+	// Frames with at most muxCoalesceMaxPayload bytes are queued and batched with the frames of
+	// other writers; larger ones are written directly, as copying them would cost more than the
+	// saved writes. A writer that finds muxCoalesceMaxPending bytes queued waits for its turn to write.
+	muxCoalesceMaxPayload = 4 * 1024
+	muxCoalesceMaxPending = 256 * 1024
 )
 
 var errMuxReceiveQueueFull = errors.New("mux receive queue full")
@@ -59,9 +65,14 @@ var errMuxReceiveQueueFull = errors.New("mux receive queue full")
 type muxSession struct {
 	conn net.Conn
 
+	// writeMu is held by whichever goroutine is writing to conn. Small frames wait in pending
+	// (guarded by pendMu) so that one write can carry the frames of several streams.
 	writeMu      sync.Mutex
 	writeHeader  [muxHeaderSize]byte
 	writeBuffers [2][]byte
+	pendMu       sync.Mutex
+	pending      []byte
+	spare        []byte
 
 	streamsMu sync.Mutex
 	streams   map[uint32]*muxStream
@@ -177,21 +188,13 @@ func (s *muxSession) sendFrame(frameType byte, streamID uint32, payload []byte) 
 		return fmt.Errorf("mux payload too large: %d", len(payload))
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-
-	header := s.writeHeader[:]
-	header[0] = frameType
-	binary.BigEndian.PutUint32(header[1:5], streamID)
-	binary.BigEndian.PutUint32(header[5:9], uint32(len(payload)))
-
-	// AEAD can include the mux header in the payload record instead of
-	// encrypting and sending an extra tiny record for every frame.
-	s.writeBuffers[0], s.writeBuffers[1] = header, payload
-	_, err := connutil.WriteBuffers(s.conn, s.writeBuffers[:])
-	s.writeBuffers[0], s.writeBuffers[1] = nil, nil
+	var err error
+	if len(payload) <= muxCoalesceMaxPayload {
+		err = s.sendQueued(frameType, streamID, payload)
+	} else {
+		err = s.sendDirect(frameType, streamID, payload)
+	}
 	if err != nil {
-		s.closeWithError(err)
 		return err
 	}
 	// Load first: the store only happens once per keepalive interval, so the hot path never
@@ -199,6 +202,102 @@ func (s *muxSession) sendFrame(frameType byte, streamID uint32, payload []byte) 
 	if !s.wroteSinceTick.Load() {
 		s.wroteSinceTick.Store(true)
 	}
+	return nil
+}
+
+// sendQueued appends the frame to the pending batch, then writes the batch unless another
+// goroutine is already writing, which picks the frame up when it finishes its current write.
+func (s *muxSession) sendQueued(frameType byte, streamID uint32, payload []byte) error {
+	s.pendMu.Lock()
+	buf := append(s.pending, frameType)
+	buf = binary.BigEndian.AppendUint32(buf, streamID)
+	buf = binary.BigEndian.AppendUint32(buf, uint32(len(payload)))
+	s.pending = append(buf, payload...)
+	full := len(s.pending) >= muxCoalesceMaxPending
+	s.pendMu.Unlock()
+	return s.flushPending(full)
+}
+
+// flushPending writes the pending batch. Unless wait is set it gives up when another goroutine
+// holds the write role; that goroutine rechecks the batch after each write, so no frame is stranded.
+func (s *muxSession) flushPending(wait bool) error {
+	for {
+		if wait {
+			s.writeMu.Lock()
+		} else if !s.writeMu.TryLock() {
+			return nil
+		}
+		err := s.writePendingLocked()
+		s.writeMu.Unlock()
+		if err != nil {
+			return err
+		}
+		wait = false
+
+		s.pendMu.Lock()
+		empty := len(s.pending) == 0
+		s.pendMu.Unlock()
+		if empty {
+			return nil
+		}
+	}
+}
+
+// writePendingLocked writes the pending batch with one write; writeMu must be held.
+func (s *muxSession) writePendingLocked() error {
+	s.pendMu.Lock()
+	buf := s.pending
+	s.pending = s.spare[:0]
+	s.spare = nil
+	s.pendMu.Unlock()
+	if len(buf) == 0 {
+		s.recycleBatch(buf)
+		return nil
+	}
+
+	err := connutil.WriteFull(s.conn, buf)
+	s.recycleBatch(buf)
+	if err != nil {
+		s.closeWithError(err)
+	}
+	return err
+}
+
+func (s *muxSession) recycleBatch(buf []byte) {
+	if cap(buf) > 1<<20 {
+		return
+	}
+	s.pendMu.Lock()
+	s.spare = buf[:0]
+	s.pendMu.Unlock()
+}
+
+// sendDirect writes a large frame behind any batch that is already pending, which keeps the
+// frames of a stream in order.
+func (s *muxSession) sendDirect(frameType byte, streamID uint32, payload []byte) error {
+	s.writeMu.Lock()
+	err := s.writePendingLocked()
+	if err == nil {
+		header := s.writeHeader[:]
+		header[0] = frameType
+		binary.BigEndian.PutUint32(header[1:5], streamID)
+		binary.BigEndian.PutUint32(header[5:9], uint32(len(payload)))
+
+		// AEAD can include the mux header in the payload record instead of
+		// encrypting and sending an extra tiny record for every frame.
+		s.writeBuffers[0], s.writeBuffers[1] = header, payload
+		_, err = connutil.WriteBuffers(s.conn, s.writeBuffers[:])
+		s.writeBuffers[0], s.writeBuffers[1] = nil, nil
+		if err != nil {
+			s.closeWithError(err)
+		}
+	}
+	s.writeMu.Unlock()
+	if err != nil {
+		return err
+	}
+	// Frames queued while this one was being written still need a writer.
+	_ = s.flushPending(false)
 	return nil
 }
 
