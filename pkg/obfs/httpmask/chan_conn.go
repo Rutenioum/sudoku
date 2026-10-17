@@ -46,14 +46,36 @@ type chanConn struct {
 	readEOFOnce   sync.Once
 	readMu        sync.Mutex
 
-	mu         sync.Mutex
-	readBuf    []byte
-	closeErr   error
-	localAddr  net.Addr
-	remoteAddr net.Addr
+	mu          sync.Mutex
+	readBuf     []byte // unread tail of readPayload
+	readPayload []byte
+	closeErr    error
+	localAddr   net.Addr
+	remoteAddr  net.Addr
 }
 
 const chanConnQueueDepth = 64
+
+const (
+	pullPayloadBytes = 32 * 1024
+	// A payload at least this full is queued as the pooled buffer it was read into; smaller ones are copied out so a
+	// full queue of tiny payloads does not pin 32KiB each.
+	pullHandoverMinBytes = pullPayloadBytes / 2
+)
+
+var pullPayloadPool = sync.Pool{New: func() any { return new([pullPayloadBytes]byte) }}
+
+func getPullPayload() *[pullPayloadBytes]byte { return pullPayloadPool.Get().(*[pullPayloadBytes]byte) }
+
+func putPullPayload(buf *[pullPayloadBytes]byte) { pullPayloadPool.Put(buf) }
+
+// recyclePayload returns a fully read payload to the pool when it is a whole pooled-size buffer; only the
+// receiving conn references it by then.
+func recyclePayload(p []byte) {
+	if cap(p) == pullPayloadBytes {
+		putPullPayload((*[pullPayloadBytes]byte)(p[:pullPayloadBytes]))
+	}
+}
 
 func newChanConn() chanConn {
 	return chanConn{
@@ -143,16 +165,19 @@ func (c *chanConn) Read(b []byte) (n int, err error) {
 
 	if len(c.readBuf) == 0 {
 		select {
-		case c.readBuf = <-c.rxc:
+		case p := <-c.rxc:
+			c.startPayload(p)
 		default:
 		}
 	}
 	if len(c.readBuf) == 0 {
 		select {
-		case c.readBuf = <-c.rxc:
+		case p := <-c.rxc:
+			c.startPayload(p)
 		case <-c.readEOF:
 			select {
-			case c.readBuf = <-c.rxc:
+			case p := <-c.rxc:
+				c.startPayload(p)
 			default:
 				return 0, io.EOF
 			}
@@ -162,7 +187,18 @@ func (c *chanConn) Read(b []byte) (n int, err error) {
 	}
 	n = copy(b, c.readBuf)
 	c.readBuf = c.readBuf[n:]
+	if len(c.readBuf) == 0 {
+		recyclePayload(c.readPayload)
+		c.readPayload = nil
+	}
 	return n, nil
+}
+
+// startPayload makes p the payload being read, recycling the previous one.
+func (c *chanConn) startPayload(p []byte) {
+	recyclePayload(c.readPayload)
+	c.readPayload = p
+	c.readBuf = p
 }
 
 func (c *chanConn) Write(b []byte) (n int, err error) {
