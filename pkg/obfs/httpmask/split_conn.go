@@ -346,8 +346,11 @@ func (c *splitConn) pushLoop() {
 		buf        []byte
 		pendingRaw int
 		timer      = time.NewTimer(splitFlushInterval)
+		timerArmed bool
 		writeErr   error
 	)
+	// The timer runs only while a batch is buffered, so idle sessions never wake up.
+	timer.Stop()
 	defer timer.Stop()
 	defer func() { c.completeWrite(writeErr) }()
 
@@ -373,6 +376,8 @@ func (c *splitConn) pushLoop() {
 		}
 		buf = buf[:0]
 		pendingRaw = 0
+		timer.Stop()
+		timerArmed = false
 		c.readiness.markPushReady()
 		return nil
 	}
@@ -392,7 +397,6 @@ func (c *splitConn) pushLoop() {
 		return nil
 	}
 
-	resetTimer(timer, splitFlushInterval)
 	for {
 		select {
 		case b := <-c.writeCh:
@@ -408,14 +412,16 @@ func (c *splitConn) pushLoop() {
 					failFlush(err)
 					return
 				}
-				resetTimer(timer, splitFlushInterval)
+			} else if !timerArmed {
+				timer.Reset(splitFlushInterval)
+				timerArmed = true
 			}
 		case <-timer.C:
+			timerArmed = false
 			if err := flush(); err != nil {
 				failFlush(err)
 				return
 			}
-			resetTimer(timer, splitFlushInterval)
 		case <-c.writeClosed:
 			// Drain any already-accepted writes so CloseWrite does not lose data.
 			for drained := false; !drained; {

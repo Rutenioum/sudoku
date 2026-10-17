@@ -104,19 +104,6 @@ func isRetryableHTTPTransportError(err error) bool {
 	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
 }
 
-func resetTimer(t *time.Timer, d time.Duration) {
-	if t == nil {
-		return
-	}
-	if !t.Stop() {
-		select {
-		case <-t.C:
-		default:
-		}
-	}
-	t.Reset(d)
-}
-
 func retryPersistent(closed <-chan struct{}, closedErr func() error, minBackoff, maxBackoff time.Duration, fn func() error) error {
 	if minBackoff < 0 {
 		minBackoff = 0
