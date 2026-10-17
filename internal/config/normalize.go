@@ -48,32 +48,23 @@ func normalizeASCII(mode string) string {
 	return normalizeLower(mode)
 }
 
-func normalizeHTTPMaskMode(mode string) string {
-	switch normalizeLower(mode) {
-	case "", "legacy":
-		return "legacy"
-	case "stream":
-		return "stream"
-	case "poll":
-		return "poll"
-	case "auto":
-		return "auto"
-	case "ws":
-		return "ws"
-	default:
-		return "legacy"
+// normalizeChoice returns the normalized value when it is one of allowed, otherwise fallback.
+func normalizeChoice(value, fallback string, allowed ...string) string {
+	v := normalizeLower(value)
+	for _, a := range allowed {
+		if v == a {
+			return v
+		}
 	}
+	return fallback
+}
+
+func normalizeHTTPMaskMode(mode string) string {
+	return normalizeChoice(mode, "legacy", "stream", "poll", "auto", "ws")
 }
 
 func normalizeMultiplex(mode string) string {
-	switch normalizeLower(mode) {
-	case "auto":
-		return "auto"
-	case "on":
-		return "on"
-	default:
-		return "off"
-	}
+	return normalizeChoice(mode, "off", "auto", "on")
 }
 
 func firstMultiplexMode(values ...string) string {
@@ -86,25 +77,9 @@ func firstMultiplexMode(values ...string) string {
 }
 
 func normalizeSuspiciousAction(action string) string {
-	switch normalizeLower(action) {
-	case "", "fallback":
-		return "fallback"
-	case "silent":
-		return "silent"
-	default:
-		return "fallback"
-	}
+	return normalizeChoice(action, "fallback", "silent")
 }
 
 func normalizeProxyMode(mode string) string {
-	switch normalizeLower(mode) {
-	case "", "global":
-		return "global"
-	case "direct":
-		return "direct"
-	case "pac":
-		return "pac"
-	default:
-		return "global"
-	}
+	return normalizeChoice(mode, "global", "direct", "pac")
 }
