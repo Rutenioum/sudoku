@@ -26,6 +26,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -242,11 +243,25 @@ func TestGoldenClientRequests(t *testing.T) {
 func errorsIsEOF(err error) bool { return err == io.EOF }
 
 func TestGoldenUploadURLPutsSequenceFirst(t *testing.T) {
-	got, err := uploadURL("http://golden.test:80/r/api/v1/upload?token=T-k_9", 12)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := "http://golden.test:80/r/api/v1/upload?seq=12&token=T-k_9"; got != want {
+	const push = "http://golden.test:80/r/api/v1/upload?token=T-k_9"
+	if got, want := uploadURL(push, 12), "http://golden.test:80/r/api/v1/upload?seq=12&token=T-k_9"; got != want {
 		t.Fatalf("uploadURL = %q, want %q", got, want)
+	}
+}
+
+// TestUploadURL_MatchesQueryEncoding pins the string-built URL to what parsing and re-encoding the query yields.
+func TestUploadURL_MatchesQueryEncoding(t *testing.T) {
+	for _, token := range []string{"T-k_9", "a+b/c=", "sp ace&x=y", "é"} {
+		pushURL := "https://h.test/root/api/v1/upload?token=" + url.QueryEscape(token)
+		u, err := url.Parse(pushURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := u.Query()
+		q.Set("seq", "7")
+		u.RawQuery = q.Encode()
+		if got := uploadURL(pushURL, 7); got != u.String() {
+			t.Fatalf("token %q: uploadURL = %q, want %q", token, got, u.String())
+		}
 	}
 }
