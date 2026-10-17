@@ -20,21 +20,30 @@ with this application without prior consent.
 package geodata
 
 import (
+	"maps"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/SUDOKU-ASCII/sudoku/pkg/logx"
 )
 
+// ruleSnapshot is the immutable rule data matches read; Update swaps in a new one per loaded source.
+type ruleSnapshot struct {
+	ipv4     []IPRange
+	ipv6     []IPv6Range
+	exact    map[string]struct{} // DOMAIN
+	keywords []string            // DOMAIN-KEYWORD
+	suffix   map[string]struct{} // DOMAIN-SUFFIX
+}
+
+var emptyRules = &ruleSnapshot{}
+
 type Manager struct {
-	ipRanges      []IPRange
-	ipv6Ranges    []IPv6Range
-	domainExact   map[string]struct{} // Exact match: DOMAIN
-	domainKeyword map[string]struct{} // Keyword match: DOMAIN-KEYWORD
-	domainSuffix  map[string]struct{} // Suffix match: DOMAIN-SUFFIX
-	mu            sync.RWMutex
-	urls          []string
-	cacheDir      string
+	rules    atomic.Pointer[ruleSnapshot]
+	urls     []string
+	cacheDir string
 }
 
 var instances sync.Map
@@ -44,13 +53,7 @@ func NewManager(urls []string) *Manager {
 	if err != nil {
 		logx.Warnf("GeoData", "Rule cache disabled: %v", err)
 	}
-	return &Manager{
-		urls:          append([]string(nil), urls...),
-		domainExact:   make(map[string]struct{}),
-		domainKeyword: make(map[string]struct{}),
-		domainSuffix:  make(map[string]struct{}),
-		cacheDir:      cacheDir,
-	}
+	return &Manager{urls: slices.Clone(urls), cacheDir: cacheDir}
 }
 
 // GetInstance returns a cached Manager keyed by the rule URL set.
@@ -77,17 +80,16 @@ func (m *Manager) Update() {
 	logx.Infof("GeoData", "Updating rules from %d sources...", len(m.urls))
 
 	state := newRuleBuildState()
-	m.applyRuleState(state)
-
 	loaded := 0
 	for _, u := range m.urls {
 		if !m.downloadAndParse(u, state) {
 			continue
 		}
 		loaded++
-		m.applyRuleState(state)
+		m.publish(state)
+		rules := m.snapshot()
 		logx.Infof("GeoData", "Rules Updated (%d/%d): %d IPv4 Ranges, %d IPv6 Ranges, %d Domains, %d Suffixes",
-			loaded, len(m.urls), len(m.ipRanges), len(m.ipv6Ranges), len(m.domainExact), len(m.domainSuffix))
+			loaded, len(m.urls), len(rules.ipv4), len(rules.ipv6), len(rules.exact), len(rules.suffix))
 	}
 
 	if loaded == 0 {
@@ -95,31 +97,22 @@ func (m *Manager) Update() {
 	}
 }
 
-func (m *Manager) applyRuleState(state *ruleBuildState) {
-	ipv4 := append([]IPRange(nil), state.ipv4...)
-	ipv6 := append([]IPv6Range(nil), state.ipv6...)
-	mergedIPv4 := mergeRanges(ipv4)
-	mergedIPv6 := mergeIPv6Ranges(ipv6)
-	exact := cloneRuleSet(state.exact)
-	keyword := cloneRuleSet(state.keyword)
-	suffix := cloneRuleSet(state.suffix)
-
-	m.mu.Lock()
-	m.ipRanges = mergedIPv4
-	m.ipv6Ranges = mergedIPv6
-	m.domainExact = exact
-	m.domainKeyword = keyword
-	m.domainSuffix = suffix
-	m.mu.Unlock()
+func (m *Manager) snapshot() *ruleSnapshot {
+	if rules := m.rules.Load(); rules != nil {
+		return rules
+	}
+	return emptyRules
 }
 
-func cloneRuleSet(src map[string]struct{}) map[string]struct{} {
-	if len(src) == 0 {
-		return make(map[string]struct{})
-	}
-	dst := make(map[string]struct{}, len(src))
-	for k := range src {
-		dst[k] = struct{}{}
-	}
-	return dst
+// publish makes everything parsed so far visible to matches. The domain sets are shared
+// with the snapshot, so state copies them before its next insert.
+func (m *Manager) publish(state *ruleBuildState) {
+	m.rules.Store(&ruleSnapshot{
+		ipv4:     mergeRanges(slices.Clone(state.ipv4)),
+		ipv6:     mergeIPv6Ranges(slices.Clone(state.ipv6)),
+		exact:    state.exact,
+		keywords: slices.Sorted(maps.Keys(state.keyword)),
+		suffix:   state.suffix,
+	})
+	state.shared = true
 }

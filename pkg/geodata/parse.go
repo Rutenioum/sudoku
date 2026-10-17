@@ -22,6 +22,7 @@ package geodata
 import (
 	"bytes"
 	"encoding/binary"
+	"maps"
 	"net"
 	"strings"
 	"unicode"
@@ -37,6 +38,30 @@ type ruleBuildState struct {
 	exact   map[string]struct{}
 	keyword map[string]struct{}
 	suffix  map[string]struct{}
+	shared  bool // the domain sets back a published snapshot and must be copied before changing
+}
+
+func (s *ruleBuildState) addExact(v string) {
+	s.unshare()
+	s.exact[v] = struct{}{}
+}
+
+func (s *ruleBuildState) addKeyword(v string) {
+	s.unshare()
+	s.keyword[v] = struct{}{}
+}
+
+func (s *ruleBuildState) addSuffix(v string) {
+	s.unshare()
+	s.suffix[v] = struct{}{}
+}
+
+func (s *ruleBuildState) unshare() {
+	if !s.shared {
+		return
+	}
+	s.exact, s.keyword, s.suffix = maps.Clone(s.exact), maps.Clone(s.keyword), maps.Clone(s.suffix)
+	s.shared = false
 }
 
 func newRuleBuildState() *ruleBuildState {
@@ -93,17 +118,17 @@ func parseRule(line string, state *ruleBuildState) bool {
 		switch ruleType {
 		case "DOMAIN":
 			if v := normalizeRuleDomain(ruleValue); v != "" {
-				state.exact[v] = struct{}{}
+				state.addExact(v)
 				return true
 			}
 		case "DOMAIN-KEYWORD":
 			if v := normalizeRuleKeyword(ruleValue); v != "" {
-				state.keyword[v] = struct{}{}
+				state.addKeyword(v)
 				return true
 			}
 		case "DOMAIN-SUFFIX":
 			if v := normalizeRuleDomain(ruleValue); v != "" {
-				state.suffix[v] = struct{}{}
+				state.addSuffix(v)
 				return true
 			}
 		case "IP-CIDR", "IP-CIDR6":
@@ -193,10 +218,10 @@ func parseBareDomainLine(line string, state *ruleBuildState) bool {
 	}
 
 	if isSuffix {
-		state.suffix[domain] = struct{}{}
+		state.addSuffix(domain)
 		return true
 	}
-	state.exact[domain] = struct{}{}
+	state.addExact(domain)
 	return true
 }
 

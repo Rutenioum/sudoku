@@ -30,7 +30,7 @@ func managerWithRules(rules ...string) *Manager {
 		parseRule(r, state)
 	}
 	m := &Manager{}
-	m.applyRuleState(state)
+	m.publish(state)
 	return m
 }
 
@@ -184,6 +184,29 @@ func TestMatchLocalNetwork(t *testing.T) {
 			t.Errorf("MatchCN(nil) = %+v", got)
 		}
 	})
+}
+
+func TestPublishLeavesEarlierSnapshotsUntouched(t *testing.T) {
+	state := newRuleBuildState()
+	m := &Manager{}
+	parseRule("DOMAIN-SUFFIX,first.cn", state)
+	m.publish(state)
+	first := m.snapshot()
+
+	parseRule("DOMAIN-SUFFIX,second.cn", state)
+	parseRule("DOMAIN-KEYWORD,kw", state)
+	parseRule("IP-CIDR,1.2.3.0/24", state)
+	m.publish(state)
+
+	if _, ok := first.suffix["second.cn"]; ok || len(first.keywords) != 0 || len(first.ipv4) != 0 {
+		t.Fatalf("published snapshot changed: %+v", first)
+	}
+	if ok, _ := m.MatchRule("www.second.cn", nil); !ok {
+		t.Fatal("second source missing from the new snapshot")
+	}
+	if ok, _ := m.MatchRule("www.first.cn", nil); !ok {
+		t.Fatal("first source lost from the new snapshot")
+	}
 }
 
 func TestMatchEmptyManager(t *testing.T) {

@@ -46,8 +46,7 @@ func (m *Manager) MatchRule(host string, ip net.IP) (bool, Match) {
 }
 
 func (m *Manager) match(host string, ip net.IP, includeLocal bool) (bool, Match) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	rules := m.snapshot()
 
 	if includeLocal && isLocalNetwork(ip) {
 		return true, Match{Kind: "LOCAL"}
@@ -57,10 +56,10 @@ func (m *Manager) match(host string, ip net.IP, includeLocal bool) (bool, Match)
 	hostIP := net.ParseIP(host)
 	if host != "" && (hostIP == nil || ip == nil || !hostIP.Equal(ip)) {
 		domain := host
-		if _, ok := m.domainExact[domain]; ok {
+		if _, ok := rules.exact[domain]; ok {
 			return true, Match{Kind: "DOMAIN", Value: domain}
 		}
-		for keyword := range m.domainKeyword {
+		for _, keyword := range rules.keywords {
 			if strings.Contains(domain, keyword) {
 				return true, Match{Kind: "DOMAIN-KEYWORD", Value: keyword}
 			}
@@ -69,7 +68,7 @@ func (m *Manager) match(host string, ip net.IP, includeLocal bool) (bool, Match)
 		parts := strings.Split(domain, ".")
 		for i := 0; i < len(parts); i++ {
 			suffix := strings.Join(parts[i:], ".")
-			if _, ok := m.domainSuffix[suffix]; ok {
+			if _, ok := rules.suffix[suffix]; ok {
 				return true, Match{Kind: "DOMAIN-SUFFIX", Value: suffix}
 			}
 		}
@@ -77,12 +76,12 @@ func (m *Manager) match(host string, ip net.IP, includeLocal bool) (bool, Match)
 
 	if ip != nil {
 		if ip.To4() != nil {
-			if matchIPv4Range(m.ipRanges, ip) {
+			if matchIPv4Range(rules.ipv4, ip) {
 				return true, Match{Kind: "IP", Value: ip.String()}
 			}
 			return false, Match{}
 		}
-		if matchIPv6Range(m.ipv6Ranges, ip) {
+		if matchIPv6Range(rules.ipv6, ip) {
 			return true, Match{Kind: "IP", Value: ip.String()}
 		}
 	}
