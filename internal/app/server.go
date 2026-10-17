@@ -106,12 +106,8 @@ func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 					return raw
 				},
 			}, tables, tunnel.AllowHandshakeReplay),
-			PassThroughOnReject: func() bool {
-				if cfg.SuspiciousAction == "silent" {
-					return true
-				}
-				return cfg.SuspiciousAction == "fallback" && strings.TrimSpace(cfg.FallbackAddr) != ""
-			}(),
+			PassThroughOnReject: cfg.SuspiciousAction == "silent" ||
+				cfg.SuspiciousAction == "fallback" && strings.TrimSpace(cfg.FallbackAddr) != "",
 		})
 	}
 
@@ -139,6 +135,19 @@ func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 		}
 		go handleServerConn(c, cfg, tables, tunnelSrv, revMgr, userReg)
 	}
+}
+
+// rejectReason explains why a handshaked user may not open a session, or returns "" when it may.
+func rejectReason(user *users.User) string {
+	switch {
+	case user == nil:
+		return "not in users whitelist"
+	case user.Blocked:
+		return "blocked"
+	case user.Exceeded():
+		return "data quota exceeded"
+	}
+	return ""
 }
 
 func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Table, tunnelSrv *httpmask.TunnelServer, revMgr *reverse.Manager, userReg *users.Registry) {
@@ -212,24 +221,21 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 	label := userHash
 	if userReg != nil {
 		user := userReg.Lookup(userHash)
-		switch {
-		case user == nil:
-			logx.Warnf("Server", "[User:%s] rejected: not in users whitelist", userHash)
-		case user.Blocked:
-			logx.Warnf("Server", "[User:%s] rejected: blocked", user.Alias)
-		case user.Exceeded():
-			logx.Warnf("Server", "[User:%s] rejected: data quota exceeded", user.Alias)
-		default:
-			label = user.Alias
-			if wire != nil {
-				wire.Bind(user)
+		if reason := rejectReason(user); reason != "" {
+			// Aliases fall back to the hash, so a private key never reaches the log.
+			who := userHash
+			if user != nil {
+				who = user.Alias
 			}
-			tunnelConn = user.WrapPayload(tunnelConn)
-		}
-		if user == nil || user.Blocked || user.Exceeded() {
+			logx.Warnf("Server", "[User:%s] rejected: %s", who, reason)
 			_ = tunnelConn.Close()
 			return
 		}
+		label = user.Alias
+		if wire != nil {
+			wire.Bind(user)
+		}
+		tunnelConn = user.WrapPayload(tunnelConn)
 	}
 
 	// Read the first KIP control message to detect session type (UoT / Mux / Reverse / normal).
