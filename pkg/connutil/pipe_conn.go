@@ -83,7 +83,58 @@ func Copy(dst io.Writer, src io.Reader) (int64, error) {
 	if reader, ok := dst.(io.ReaderFrom); ok {
 		return reader.ReadFrom(src)
 	}
-	buf := pipeBufPool.Get().(*[PipeBufferSize]byte)
-	defer pipeBufPool.Put(buf)
-	return io.CopyBuffer(dst, src, buf[:])
+	return copyAdaptive(dst, src)
+}
+
+// smallRelayBuffer is what a relay reads into while its source may stay silent.
+const smallRelayBuffer = 2 * 1024
+
+var smallRelayPool = sync.Pool{
+	New: func() any {
+		return new([smallRelayBuffer]byte)
+	},
+}
+
+// copyAdaptive relays with a small buffer and moves to a PipeBufferSize one
+// while reads keep filling it, so an idle relay holds a couple of KiB instead
+// of a 63 KiB buffer parked inside a blocked Read. The big buffer goes back as
+// soon as a read comes up short.
+func copyAdaptive(dst io.Writer, src io.Reader) (written int64, err error) {
+	small := smallRelayPool.Get().(*[smallRelayBuffer]byte)
+	defer smallRelayPool.Put(small)
+	var big *[PipeBufferSize]byte
+	defer func() {
+		if big != nil {
+			pipeBufPool.Put(big)
+		}
+	}()
+
+	buf := small[:]
+	for {
+		nr, rerr := src.Read(buf)
+		if nr > 0 {
+			nw, werr := dst.Write(buf[:nr])
+			written += int64(max(nw, 0))
+			if werr == nil && nw != nr {
+				werr = io.ErrShortWrite
+			}
+			if werr != nil {
+				return written, werr
+			}
+			switch {
+			case big == nil && nr == len(buf):
+				big = pipeBufPool.Get().(*[PipeBufferSize]byte)
+				buf = big[:]
+			case big != nil && nr < smallRelayBuffer:
+				pipeBufPool.Put(big)
+				big, buf = nil, small[:]
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				rerr = nil
+			}
+			return written, rerr
+		}
+	}
 }
