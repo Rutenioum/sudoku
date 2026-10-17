@@ -22,9 +22,7 @@ package httpmask
 import (
 	"context"
 	"fmt"
-	mrand "math/rand"
 	"net"
-	"net/http"
 	"strings"
 	"time"
 
@@ -265,20 +263,3 @@ var (
 	dialStreamFn = dialStream
 	dialPollFn   = dialPoll
 )
-
-func applyTunnelHeaders(h http.Header, host string, mode TunnelMode) {
-	r := rngPool.Get().(*mrand.Rand)
-	ua := userAgents[r.Intn(len(userAgents))]
-	accept := accepts[r.Intn(len(accepts))]
-	lang := acceptLanguages[r.Intn(len(acceptLanguages))]
-	rngPool.Put(r)
-
-	h.Set("User-Agent", ua)
-	h.Set("Accept", accept)
-	h.Set("Accept-Language", lang)
-	h.Set("Cache-Control", "no-cache")
-	h.Set("Pragma", "no-cache")
-	h.Set("Connection", "keep-alive")
-	h.Set("Host", host)
-	h.Set("X-Sudoku-Tunnel", string(mode))
-}

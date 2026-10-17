@@ -21,7 +21,9 @@ package httpmask
 
 import (
 	"fmt"
+	mrand "math/rand"
 	"net"
+	"net/http"
 	"strings"
 )
 
@@ -54,10 +56,21 @@ func normalizeHTTPDialTarget(serverAddress string, tlsEnabled bool, hostOverride
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("invalid server address %q: %w", serverAddress, err)
 	}
+	scheme = "http"
+	if tlsEnabled {
+		scheme = "https"
+	}
+	urlHost, dialAddr, serverName = resolveDialTarget(host, port, hostOverride)
+	return scheme, urlHost, dialAddr, serverName, nil
+}
 
+// resolveDialTarget applies HostOverride ("example.com" or "example.com:443"):
+// it changes the Host header and SNI and may change the port, but the TCP
+// connection still goes to host.
+func resolveDialTarget(host, port, hostOverride string) (urlHost, dialAddr, serverName string) {
+	serverName = host
 	if hostOverride != "" {
-		// Allow "example.com" or "example.com:443"
-		if h, p, splitErr := net.SplitHostPort(hostOverride); splitErr == nil {
+		if h, p, err := net.SplitHostPort(hostOverride); err == nil {
 			if h != "" {
 				hostOverride = h
 			}
@@ -66,18 +79,26 @@ func normalizeHTTPDialTarget(serverAddress string, tlsEnabled bool, hostOverride
 			}
 		}
 		serverName = hostOverride
-		urlHost = net.JoinHostPort(hostOverride, port)
-	} else {
-		serverName = host
-		urlHost = net.JoinHostPort(host, port)
 	}
+	return net.JoinHostPort(serverName, port), net.JoinHostPort(host, port), trimPortForHost(serverName)
+}
 
-	if tlsEnabled {
-		scheme = "https"
-	} else {
-		scheme = "http"
+func applyTunnelHeaders(h http.Header, host string, mode TunnelMode) {
+	r := rngPool.Get().(*mrand.Rand)
+	ua := userAgents[r.Intn(len(userAgents))]
+	accept := accepts[r.Intn(len(accepts))]
+	lang := acceptLanguages[r.Intn(len(acceptLanguages))]
+	rngPool.Put(r)
+
+	h.Set("User-Agent", ua)
+	h.Set("Accept", accept)
+	h.Set("Accept-Language", lang)
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Pragma", "no-cache")
+	if mode != TunnelModeWS {
+		// The WebSocket handshake owns the Connection header.
+		h.Set("Connection", "keep-alive")
 	}
-
-	dialAddr = net.JoinHostPort(host, port)
-	return scheme, urlHost, dialAddr, trimPortForHost(serverName), nil
+	h.Set("Host", host)
+	h.Set("X-Sudoku-Tunnel", string(mode))
 }

@@ -25,7 +25,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	mrand "math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -63,53 +62,13 @@ func normalizeWSDialTarget(serverAddress string, tlsEnabled bool, hostOverride s
 		if strings.Contains(addr, ":") {
 			return "", "", "", "", fmt.Errorf("invalid server address %q: %w", serverAddress, err)
 		}
-		switch scheme {
-		case "wss":
+		host, port = addr, "80"
+		if scheme == "wss" {
 			port = "443"
-		default:
-			port = "80"
 		}
-		host = addr
 	}
-
-	if hostOverride != "" {
-		// Allow "example.com" or "example.com:443"
-		if h, p, splitErr := net.SplitHostPort(hostOverride); splitErr == nil {
-			if h != "" {
-				hostOverride = h
-			}
-			if p != "" {
-				port = p
-			}
-		}
-		serverName = hostOverride
-		urlHost = net.JoinHostPort(hostOverride, port)
-	} else {
-		serverName = host
-		urlHost = net.JoinHostPort(host, port)
-	}
-
-	dialAddr = net.JoinHostPort(host, port)
-	return scheme, urlHost, dialAddr, trimPortForHost(serverName), nil
-}
-
-func applyWSHeaders(h http.Header, host string) {
-	if h == nil {
-		return
-	}
-	r := rngPool.Get().(*mrand.Rand)
-	ua := userAgents[r.Intn(len(userAgents))]
-	accept := accepts[r.Intn(len(accepts))]
-	lang := acceptLanguages[r.Intn(len(acceptLanguages))]
-	rngPool.Put(r)
-
-	h.Set("User-Agent", ua)
-	h.Set("Accept", accept)
-	h.Set("Accept-Language", lang)
-	h.Set("Cache-Control", "no-cache")
-	h.Set("Pragma", "no-cache")
-	h.Set("Host", host)
-	h.Set("X-Sudoku-Tunnel", string(TunnelModeWS))
+	urlHost, dialAddr, serverName = resolveDialTarget(host, port, hostOverride)
+	return scheme, urlHost, dialAddr, serverName, nil
 }
 
 func dialWS(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
@@ -142,7 +101,7 @@ func dialWS(ctx context.Context, serverAddress string, opts TunnelDialOptions) (
 		return nil, err
 	}
 	req.Host = headerHost
-	applyWSHeaders(req.Header, headerHost)
+	applyTunnelHeaders(req.Header, headerHost, TunnelModeWS)
 	applyTunnelAuth(req, auth, TunnelModeWS, http.MethodGet, "/ws")
 
 	tr := &http.Transport{
