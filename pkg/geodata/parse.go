@@ -22,7 +22,6 @@ package geodata
 import (
 	"bytes"
 	"encoding/binary"
-	"io"
 	"net"
 	"strings"
 	"unicode"
@@ -30,10 +29,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// RuleSet is used to parse YAML-formatted payloads.
-type RuleSet struct {
-	Payload []string `yaml:"payload"`
-}
+var payloadKey = []byte("payload")
 
 type ruleBuildState struct {
 	ipv4    []IPRange
@@ -51,29 +47,30 @@ func newRuleBuildState() *ruleBuildState {
 	}
 }
 
+// parseRuleSource loads a YAML "payload:" document or, failing that, one rule per line.
 func parseRuleSource(body []byte, state *ruleBuildState) bool {
-	parsed := false
-	var rs RuleSet
-	if err := yaml.Unmarshal(body, &rs); err == nil && len(rs.Payload) > 0 {
-		for _, rule := range rs.Payload {
-			if parseRule(rule, state) {
-				parsed = true
-			}
+	// A payload key must spell "payload"; skipping YAML otherwise spares plain lists a full parse.
+	if bytes.Contains(body, payloadKey) {
+		var doc struct {
+			Payload []string `yaml:"payload"`
 		}
-		return parsed
+		if err := yaml.Unmarshal(body, &doc); err == nil && len(doc.Payload) > 0 {
+			parsed := false
+			for _, rule := range doc.Payload {
+				if parseRule(rule, state) {
+					parsed = true
+				}
+			}
+			return parsed
+		}
 	}
 
-	scanner := bytes.NewBuffer(body)
-	for {
-		line, err := scanner.ReadString('\n')
-		if err != nil && err != io.EOF {
-			break
-		}
+	parsed := false
+	for text := string(body); text != ""; {
+		var line string
+		line, text, _ = strings.Cut(text, "\n")
 		if parseRule(line, state) {
 			parsed = true
-		}
-		if err == io.EOF {
-			break
 		}
 	}
 	return parsed
@@ -88,10 +85,10 @@ func parseRule(line string, state *ruleBuildState) bool {
 
 	// 1. Try parsing Clash format: TYPE,VALUE,...
 	// e.g. DOMAIN,baidu.com or IP-CIDR,1.2.3.4/24,no-resolve
-	parts := strings.Split(line, ",")
-	if len(parts) >= 2 {
-		ruleType := strings.TrimSpace(strings.ToUpper(parts[0]))
-		ruleValue := strings.TrimSpace(parts[1])
+	if typeField, rest, hasComma := strings.Cut(line, ","); hasComma {
+		valueField, _, _ := strings.Cut(rest, ",")
+		ruleType := strings.TrimSpace(strings.ToUpper(typeField))
+		ruleValue := strings.TrimSpace(valueField)
 
 		switch ruleType {
 		case "DOMAIN":
