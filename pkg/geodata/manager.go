@@ -107,7 +107,7 @@ var (
 )
 
 var newRuleDownloadClient = func() *http.Client {
-	return dnsutil.NewOutboundHTTPClient(30*time.Second, dnsutil.RecommendedClientResolver())
+	return dnsutil.NewOutboundHTTPClient(30*time.Second, dnsutil.ClientResolver())
 }
 
 func NewManager(urls []string) *Manager {

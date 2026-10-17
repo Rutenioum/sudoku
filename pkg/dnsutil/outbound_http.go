@@ -27,23 +27,15 @@ import (
 	"time"
 )
 
-var (
-	recommendedClientResolverOnce sync.Once
-	recommendedClientResolver     *Resolver
-)
-
-// RecommendedClientResolver returns the built-in IPv4-only resolver used for
-// client-side public destination lookups such as PAC/geodata downloads.
-func RecommendedClientResolver() *Resolver {
-	recommendedClientResolverOnce.Do(func() {
-		r, err := NewResolver(RecommendedClientOptions())
-		if err != nil {
-			r = newResolver(defaultCacheTTL, nil)
-		}
-		recommendedClientResolver = r
-	})
-	return recommendedClientResolver
-}
+// ClientResolver is the shared IPv4-only resolver for client-side lookups of public
+// destinations such as PAC/geodata downloads.
+var ClientResolver = sync.OnceValue(func() *Resolver {
+	r, err := NewResolver(RecommendedClientOptions())
+	if err != nil {
+		panic("dnsutil: invalid built-in client options: " + err.Error())
+	}
+	return r
+})
 
 // NewOutboundHTTPClient returns a client that dials through OutboundDialer and
 // resolves destinations with resolver, falling back to the dialer's own lookup.
