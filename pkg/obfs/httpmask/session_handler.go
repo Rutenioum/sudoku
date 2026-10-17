@@ -38,12 +38,6 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 )
 
-const (
-	sessionPath = "/session"
-	pullPath    = "/stream"
-	uploadPath  = "/api/v1/upload"
-)
-
 // handleSession serves one stream or poll request. The two modes share their
 // routing and differ only in payload encoding (codec) and in a few rejection
 // details that older clients and probes can observe, so those are preserved.
