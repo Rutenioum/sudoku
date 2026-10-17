@@ -29,10 +29,9 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
-	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
-func handleClientSocks4(conn net.Conn, cfg *config.Config, _ *sudoku.Table, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
+func handleClientSocks4(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
 	defer conn.Close()
 
 	buf := make([]byte, 8)

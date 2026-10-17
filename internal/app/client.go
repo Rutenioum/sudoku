@@ -143,10 +143,6 @@ func RunClientPool(configs []*config.Config, tableSets [][]*sudoku.Table) {
 		_ = l.Close()
 	}()
 
-	var primaryTable *sudoku.Table
-	if len(primary.Tables) > 0 {
-		primaryTable = primary.Tables[0]
-	}
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -160,11 +156,11 @@ func RunClientPool(configs []*config.Config, tableSets [][]*sudoku.Table) {
 				continue
 			}
 		}
-		go handleMixedConn(c, primary.Config, primaryTable, routeMgrs, dialer, resolver)
+		go handleMixedConn(c, primary.Config, routeMgrs, dialer, resolver)
 	}
 }
 
-func handleMixedConn(c net.Conn, cfg *config.Config, table *sudoku.Table, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
+func handleMixedConn(c net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
 	buf := make([]byte, 1)
 	if _, err := io.ReadFull(c, buf); err != nil {
 		c.Close()
@@ -175,10 +171,10 @@ func handleMixedConn(c net.Conn, cfg *config.Config, table *sudoku.Table, routeM
 
 	switch buf[0] {
 	case 0x05:
-		handleClientSocks5(pConn, cfg, table, routeMgrs, dialer, resolver)
+		handleClientSocks5(pConn, cfg, routeMgrs, dialer, resolver)
 	case 0x04:
-		handleClientSocks4(pConn, cfg, table, routeMgrs, dialer, resolver)
+		handleClientSocks4(pConn, cfg, routeMgrs, dialer, resolver)
 	default:
-		handleHTTP(pConn, cfg, table, routeMgrs, dialer, resolver)
+		handleHTTP(pConn, cfg, routeMgrs, dialer, resolver)
 	}
 }

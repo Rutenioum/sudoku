@@ -36,7 +36,6 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/logx"
-	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
 var networkInterfaces = net.Interfaces
@@ -47,7 +46,7 @@ func writeSocks5Reply(w io.Writer, rep byte) {
 	_, _ = w.Write([]byte{0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 }
 
-func handleClientSocks5(conn net.Conn, cfg *config.Config, _ *sudoku.Table, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
+func handleClientSocks5(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
 	defer conn.Close()
 
 	buf := make([]byte, 262)
