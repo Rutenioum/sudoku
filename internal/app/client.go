@@ -144,11 +144,11 @@ func RunClientPool(configs []*config.Config, tableSets [][]*sudoku.Table) {
 				continue
 			}
 		}
-		go handleMixedConn(c, primary.Config, routeMgrs, dialer, resolver)
+		go serveMixed(c, primary.Config, routeMgrs, dialer, resolver)
 	}
 }
 
-func handleMixedConn(c net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
+func serveMixed(c net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
 	buf := make([]byte, 1)
 	if _, err := io.ReadFull(c, buf); err != nil {
 		c.Close()
@@ -159,9 +159,9 @@ func handleMixedConn(c net.Conn, cfg *config.Config, routeMgrs *routeManagers, d
 
 	switch buf[0] {
 	case 0x05:
-		handleClientSocks5(pConn, cfg, routeMgrs, dialer, resolver)
+		handleSocks5(pConn, cfg, routeMgrs, dialer, resolver)
 	case 0x04:
-		handleClientSocks4(pConn, cfg, routeMgrs, dialer, resolver)
+		handleSocks4(pConn, cfg, routeMgrs, dialer, resolver)
 	default:
 		handleHTTP(pConn, cfg, routeMgrs, dialer, resolver)
 	}

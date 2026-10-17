@@ -252,14 +252,14 @@ func TestDialTarget_RejectSkipsOutboundDial(t *testing.T) {
 	}
 }
 
-func TestHandleMixedConn_HTTPRejectReturnsForbidden(t *testing.T) {
+func TestServeMixed_HTTPRejectReturnsForbidden(t *testing.T) {
 	rejectMgr := newRuleManagerForTest(t, "payload:\n  - DOMAIN-SUFFIX,ads.example\n")
 
 	reqStr := "CONNECT track.ads.example:443 HTTP/1.1\r\nHost: track.ads.example:443\r\n\r\n"
 	conn := NewMockConn([]byte(reqStr))
 	cfg := &config.Config{ProxyMode: "global"}
 
-	handleMixedConn(conn, cfg, &routeManagers{reject: rejectMgr}, &MockDialer{
+	serveMixed(conn, cfg, &routeManagers{reject: rejectMgr}, &MockDialer{
 		DialFunc: func(destAddrStr string) (net.Conn, error) {
 			t.Fatalf("unexpected proxy dial: %s", destAddrStr)
 			return nil, nil
@@ -271,7 +271,7 @@ func TestHandleMixedConn_HTTPRejectReturnsForbidden(t *testing.T) {
 	}
 }
 
-func TestHandleMixedConn_SOCKS5RejectReturnsRulesetDeny(t *testing.T) {
+func TestServeMixed_SOCKS5RejectReturnsRulesetDeny(t *testing.T) {
 	rejectMgr := newRuleManagerForTest(t, "payload:\n  - DOMAIN-SUFFIX,ads.example\n")
 
 	input := []byte{
@@ -283,7 +283,7 @@ func TestHandleMixedConn_SOCKS5RejectReturnsRulesetDeny(t *testing.T) {
 	conn := NewMockConn(input)
 	cfg := &config.Config{ProxyMode: "global"}
 
-	handleMixedConn(conn, cfg, &routeManagers{reject: rejectMgr}, &MockDialer{
+	serveMixed(conn, cfg, &routeManagers{reject: rejectMgr}, &MockDialer{
 		DialFunc: func(destAddrStr string) (net.Conn, error) {
 			t.Fatalf("unexpected proxy dial: %s", destAddrStr)
 			return nil, nil
@@ -302,7 +302,7 @@ func TestHandleMixedConn_SOCKS5RejectReturnsRulesetDeny(t *testing.T) {
 	}
 }
 
-func TestHandleMixedConn_SOCKS4(t *testing.T) {
+func TestServeMixed_SOCKS4(t *testing.T) {
 	// Construct SOCKS4 Connect Request
 	// VN(4) | CD(1) | PORT(80) | IP(1.2.3.4) | USERID("user") | NULL
 	buf := new(bytes.Buffer)
@@ -325,7 +325,7 @@ func TestHandleMixedConn_SOCKS4(t *testing.T) {
 		},
 	}
 
-	handleMixedConn(conn, cfg, nil, dialer, nil)
+	serveMixed(conn, cfg, nil, dialer, nil)
 
 	// Verify Target
 	expectedTarget := "1.2.3.4:80"
@@ -341,7 +341,7 @@ func TestHandleMixedConn_SOCKS4(t *testing.T) {
 	}
 }
 
-func TestHandleMixedConn_SOCKS5(t *testing.T) {
+func TestServeMixed_SOCKS5(t *testing.T) {
 	// 1. Handshake: VER(5) | NMETHODS(1) | METHOD(0)
 	// 2. Request: VER(5) | CMD(1) | RSV(0) | ATYP(1) | IP(1.2.3.4) | PORT(80)
 	input := []byte{
@@ -359,7 +359,7 @@ func TestHandleMixedConn_SOCKS5(t *testing.T) {
 		},
 	}
 
-	handleMixedConn(conn, cfg, nil, dialer, nil)
+	serveMixed(conn, cfg, nil, dialer, nil)
 
 	expectedTarget := "1.2.3.4:80"
 	if target != expectedTarget {
@@ -367,7 +367,7 @@ func TestHandleMixedConn_SOCKS5(t *testing.T) {
 	}
 }
 
-func TestHandleMixedConn_HTTP(t *testing.T) {
+func TestServeMixed_HTTP(t *testing.T) {
 	reqStr := "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"
 	conn := NewMockConn([]byte(reqStr))
 	cfg := &config.Config{ProxyMode: "global"}
@@ -380,7 +380,7 @@ func TestHandleMixedConn_HTTP(t *testing.T) {
 		},
 	}
 
-	handleMixedConn(conn, cfg, nil, dialer, nil)
+	serveMixed(conn, cfg, nil, dialer, nil)
 
 	expectedTarget := "example.com:443"
 	if target != expectedTarget {
@@ -388,7 +388,7 @@ func TestHandleMixedConn_HTTP(t *testing.T) {
 	}
 }
 
-func TestHandleMixedConn_HTTPIPv6HostNoPort(t *testing.T) {
+func TestServeMixed_HTTPIPv6HostNoPort(t *testing.T) {
 	reqStr := "CONNECT [2001:db8::1] HTTP/1.1\r\nHost: [2001:db8::1]\r\n\r\n"
 	conn := NewMockConn([]byte(reqStr))
 	cfg := &config.Config{ProxyMode: "global"}
@@ -401,7 +401,7 @@ func TestHandleMixedConn_HTTPIPv6HostNoPort(t *testing.T) {
 		},
 	}
 
-	handleMixedConn(conn, cfg, nil, dialer, nil)
+	serveMixed(conn, cfg, nil, dialer, nil)
 
 	expectedTarget := "[2001:db8::1]:443"
 	if target != expectedTarget {

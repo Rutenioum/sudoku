@@ -31,7 +31,7 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
 )
 
-func handleClientSocks4(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
+func handleSocks4(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
 	defer conn.Close()
 
 	buf := make([]byte, 8)
