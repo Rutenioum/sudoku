@@ -1,0 +1,71 @@
+//go:build unix
+
+/*
+Copyright (C) 2026 by saba <contact me via issue>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+In addition, no derivative work may use the name or imply association
+with this application without prior consent.
+*/
+package httpmask
+
+import (
+	"net"
+	"syscall"
+	"testing"
+	"time"
+)
+
+const (
+	idleBenchSessions = 200
+	idleBenchWindow   = 2 * time.Second
+)
+
+func processCPUTime(tb testing.TB) time.Duration {
+	tb.Helper()
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		tb.Fatalf("getrusage: %v", err)
+	}
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
+}
+
+// BenchmarkSplitIdleSessions reports the CPU that idle established sessions burn on both ends.
+func BenchmarkSplitIdleSessions(b *testing.B) {
+	for _, mode := range benchModes {
+		b.Run(mode, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				addr, tunnels := startBenchServer(b, newBenchServer(mode))
+				var conns []net.Conn
+				for j := 0; j < idleBenchSessions; j++ {
+					client, server := dialBenchSession(b, addr, tunnels, mode)
+					conns = append(conns, client, server)
+				}
+				time.Sleep(200 * time.Millisecond) // let dial-time work settle
+
+				cpuBefore := processCPUTime(b)
+				b.StartTimer()
+				time.Sleep(idleBenchWindow)
+				b.StopTimer()
+				cpu := processCPUTime(b) - cpuBefore
+				b.ReportMetric(float64(cpu.Milliseconds()), "cpu-ms/op")
+				for _, c := range conns {
+					_ = c.Close()
+				}
+			}
+		})
+	}
+}
