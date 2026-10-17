@@ -32,7 +32,7 @@ const minReapInterval = 50 * time.Millisecond
 // tunnelSession is the server side of one stream/poll session: the pipe that
 // carries tunnel bytes plus the bookkeeping HTTP requests need to share it.
 type tunnelSession struct {
-	conn           net.Conn
+	conn           *halfPipeConn
 	lastActive     time.Time // guarded by sessionStore.mu
 	uplinkClosed   bool      // guarded by sessionStore.mu
 	downlinkClosed bool      // guarded by sessionStore.mu
@@ -48,7 +48,7 @@ type tunnelSession struct {
 	pendingDownlink []byte // owned by the current pull lease holder
 }
 
-func newTunnelSession(conn net.Conn) *tunnelSession {
+func newTunnelSession(conn *halfPipeConn) *tunnelSession {
 	return &tunnelSession{conn: conn, closed: make(chan struct{}), lastActive: time.Now(), nextUploadSeq: 1}
 }
 
@@ -110,7 +110,7 @@ func newSessionStore(ttl time.Duration) *sessionStore {
 }
 
 // add registers a session for conn and starts its idle reaper.
-func (st *sessionStore) add(token string, conn net.Conn) *tunnelSession {
+func (st *sessionStore) add(token string, conn *halfPipeConn) *tunnelSession {
 	sess := newTunnelSession(conn)
 	st.mu.Lock()
 	st.byToken[token] = sess
