@@ -26,6 +26,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/protocol"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
@@ -164,31 +165,62 @@ func (u *UoTWriter) writeAddrPort(ap netip.AddrPort, payload []byte) error {
 	return u.enqueue(func(b []byte) ([]byte, error) { return appendUoTAddrPort(b, ap), nil }, payload)
 }
 
-// uotFrameReader reads frames into a reused buffer; results are valid until the next call.
-type uotFrameReader struct {
-	r   io.Reader
-	buf []byte
+// UoTReader reads datagram frames from a UoT tunnel into one buffer that is reused across calls.
+type UoTReader struct {
+	r      io.Reader
+	header [4]byte // a field, because a local would escape through the io.Reader call
+	buf    []byte
 }
 
-func (f *uotFrameReader) next() (addr, payload []byte, err error) {
-	var header [4]byte
-	if _, err := io.ReadFull(f.r, header[:]); err != nil {
-		return nil, nil, err
+func NewUoTReader(r io.Reader) *UoTReader { return &UoTReader{r: r} }
+
+// readUoTFrame reads one frame into buf, growing it (to at least minCap) when it is too small.
+// It returns the encoded address, the payload, and the buffer to pass to the next call.
+func readUoTFrame(r io.Reader, header *[4]byte, buf []byte, minCap int) (addr, payload, grown []byte, err error) {
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return nil, nil, buf, err
 	}
 	addrLen := int(binary.BigEndian.Uint16(header[:2]))
 	payloadLen := int(binary.BigEndian.Uint16(header[2:]))
 	if addrLen == 0 {
-		return nil, nil, fmt.Errorf("invalid address length: %d", addrLen)
+		return nil, nil, buf, fmt.Errorf("invalid address length: %d", addrLen)
 	}
 	n := addrLen + payloadLen
-	if cap(f.buf) < n {
-		f.buf = make([]byte, max(n, 2048))
+	if cap(buf) < n {
+		buf = make([]byte, max(n, minCap))
 	}
-	body := f.buf[:n]
-	if _, err := io.ReadFull(f.r, body); err != nil {
-		return nil, nil, err
+	body := buf[:n]
+	if _, err := io.ReadFull(r, body); err != nil {
+		return nil, nil, buf, err
 	}
-	return body[:addrLen], body[addrLen:], nil
+	return body[:addrLen], body[addrLen:], buf, nil
+}
+
+// next returns the encoded address and the payload of the next frame; both are valid until the next call.
+func (u *UoTReader) next() (addr, payload []byte, err error) {
+	addr, payload, u.buf, err = readUoTFrame(u.r, &u.header, u.buf, 2048)
+	return addr, payload, err
+}
+
+// ReadDatagram returns the datagram's peer as "host:port" and its payload. The payload is
+// only valid until the next call.
+func (u *UoTReader) ReadDatagram() (string, []byte, error) {
+	addrBytes, payload, err := u.next()
+	if err != nil {
+		return "", nil, err
+	}
+	return decodeUoTPeer(addrBytes, payload)
+}
+
+func decodeUoTPeer(addrBytes, payload []byte) (string, []byte, error) {
+	ap, host, err := parseUoTAddr(addrBytes)
+	if err != nil {
+		return "", nil, fmt.Errorf("decode address: %w", err)
+	}
+	if host == "" {
+		host = ap.String()
+	}
+	return host, payload, nil
 }
 
 // parseUoTAddr decodes an encoded address. IP destinations come back as ap; domains as host (host:port).
@@ -211,21 +243,81 @@ func parseUoTAddr(b []byte) (ap netip.AddrPort, host string, err error) {
 	return netip.AddrPort{}, host, err
 }
 
-// ReadUoTDatagram parses a single UDP datagram frame from the reliable tunnel.
+// ReadUoTDatagram parses a single UDP datagram frame from the reliable tunnel. The payload is
+// owned by the caller; loops should use a UoTReader instead.
 func ReadUoTDatagram(r io.Reader) (string, []byte, error) {
-	f := uotFrameReader{r: r}
-	addrBytes, payload, err := f.next()
+	var header [4]byte
+	addrBytes, payload, _, err := readUoTFrame(r, &header, nil, 0)
 	if err != nil {
 		return "", nil, err
 	}
-	ap, host, err := parseUoTAddr(addrBytes)
+	return decodeUoTPeer(addrBytes, payload)
+}
+
+const (
+	// uotDestinationTTL bounds how long a resolved domain is reused for datagram destinations.
+	uotDestinationTTL        = 30 * time.Second
+	uotDestinationCacheLimit = 256
+)
+
+type uotDestination struct {
+	ap      netip.AddrPort
+	expires time.Time
+}
+
+// uotDestinations resolves the destination of each datagram. Domains are cached for a short time
+// (successful lookups only), keyed by their encoded form so a hit does not even decode the name.
+// It belongs to the single goroutine that reads the tunnel and needs no lock.
+type uotDestinations struct {
+	resolve func(hostPort string) (netip.AddrPort, error)
+	cache   map[string]uotDestination
+}
+
+func newUoTDestinations() *uotDestinations {
+	return &uotDestinations{resolve: resolveUDPAddrPort, cache: make(map[string]uotDestination)}
+}
+
+func resolveUDPAddrPort(hostPort string) (netip.AddrPort, error) {
+	a, err := net.ResolveUDPAddr("udp", hostPort)
 	if err != nil {
-		return "", nil, fmt.Errorf("decode address: %w", err)
+		return netip.AddrPort{}, err
 	}
-	if host == "" {
-		host = ap.String()
+	return a.AddrPort(), nil
+}
+
+func (d *uotDestinations) lookup(addr []byte, now time.Time) (netip.AddrPort, error) {
+	if len(addr) > 0 && addr[0] == protocol.AddrTypeDomain {
+		if e, ok := d.cache[string(addr)]; ok {
+			if now.Before(e.expires) {
+				return e.ap, nil
+			}
+			delete(d.cache, string(addr))
+		}
 	}
-	return host, payload, nil
+	ap, host, err := parseUoTAddr(addr)
+	if err != nil || host == "" {
+		return ap, err
+	}
+	ap, err = d.resolve(host)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	d.store(string(addr), ap, now)
+	return ap, nil
+}
+
+func (d *uotDestinations) store(key string, ap netip.AddrPort, now time.Time) {
+	if len(d.cache) >= uotDestinationCacheLimit {
+		for k, e := range d.cache {
+			if !now.Before(e.expires) {
+				delete(d.cache, k)
+			}
+		}
+		if len(d.cache) >= uotDestinationCacheLimit {
+			clear(d.cache)
+		}
+	}
+	d.cache[key] = uotDestination{ap: ap, expires: now.Add(uotDestinationTTL)}
 }
 
 // HandleUoTServer bridges UDP packets over the already-upgraded tunnel connection.
@@ -265,25 +357,18 @@ func HandleUoTServer(conn net.Conn) error {
 	}()
 
 	go func() {
-		fr := uotFrameReader{r: conn}
+		fr := NewUoTReader(conn)
+		dests := newUoTDestinations()
 		for {
 			addrBytes, payload, err := fr.next()
 			if err != nil {
 				closeAll(err)
 				return
 			}
-			ap, host, err := parseUoTAddr(addrBytes)
+			ap, err := dests.lookup(addrBytes, time.Now())
 			if err != nil {
+				// Skip invalid or unresolvable destinations instead of failing the whole session.
 				continue
-			}
-			if host != "" {
-				// Domain destination: resolve per datagram, as before.
-				udpAddr, err := net.ResolveUDPAddr("udp", host)
-				if err != nil {
-					// Skip invalid destinations instead of failing the whole session.
-					continue
-				}
-				ap = udpAddr.AddrPort()
 			}
 			if _, err := pConn.WriteToUDPAddrPort(payload, ap); err != nil {
 				closeAll(err)
