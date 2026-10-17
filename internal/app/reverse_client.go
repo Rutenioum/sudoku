@@ -37,10 +37,7 @@ func startReverseClient(cfg *config.Config, baseDialer *tunnel.BaseDialer) {
 		return
 	}
 
-	clientID := ""
-	if cfg.Reverse != nil {
-		clientID = cfg.Reverse.ClientID
-	}
+	clientID := cfg.Reverse.ClientID
 	routes := append([]config.ReverseRoute(nil), cfg.Reverse.Routes...)
 
 	go func() {
