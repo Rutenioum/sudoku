@@ -1,9 +1,46 @@
 # 更新日志
 
-## 未发布（v0.5.2 开发中）
+## v0.5.2.0（未发布）
+一次不改协议的整体重构与性能优化：wire 格式、配置 JSON 键、短链接格式与命令行参数均未变化，与 v0.5.1 / v0.5.0 以及 mihomo、Anywhere 双向互通（`tests/interop_test.go` 以真实进程对照参考二进制验证，另有 v0.5.1 golden 向量固定解码行为）。
+
+### 新功能
 - `users`: 服务端新增 `users` 白名单。按握手中的用户哈希识别用户（`key` 可填客户端私钥或 8–16 位哈希前缀，按长度区分），哈希不在列表中的连接即使握手成功也会被拒绝；每个用户可配置 `alias`（日志显示 `[User:alias]`）、`bandwidth`（`[服务端→客户端, 客户端→服务端]`，单位 Mbps，限制解码后的负载速率）、`data`（GB，按 wire 流量双向累计，用尽后断开并拒绝新连接）与 `blocked`。不配置 `users` 时行为不变，协议无改动。
-- `perf/uot`: UoT 每个数据报改为一次写入（原先 3 次写入、3 个 AEAD record），并新增批量写入队列：积压的数据报合并为大 record 发送，服务端与 SOCKS5 UDP 客户端共用。队列超过 256KB 时丢弃新数据报，行为与拥塞的 UDP 链路一致。本机基准中 packed 下行 UoT/TCP 由约 17% 提升到约 66%，其余方向约 76%–80%。wire 格式不变，新旧端互通。
+
+### 性能
+- `perf/uot`: UoT 每个数据报改为一次写入（原先 3 次写入、3 个 AEAD record），并新增批量写入队列：积压的数据报合并为大 record 发送，服务端与 SOCKS5 UDP 客户端共用。队列超过 256KB 时丢弃新数据报，行为与拥塞的 UDP 链路一致。客户端改用常驻 `UoTReader`，服务端缓存域名目的地址（最长 30 秒，仅缓存成功解析）。本机基准中 packed 下行 UoT/TCP 由约 17% 提升到约 66%，其余方向约 76%–80%。
+- `perf/memory`: 空闲连接不再持有缓冲区。Sudoku 编解码连接空闲时只占 512 B 内联读缓冲，读满后才换用池化的 32 KiB 缓冲；record 帧改为从 `sync.Pool` 借用；中继缓冲在读满之前只用 2 KiB。本机 1000 条空闲连接的 RSS 下降 52.7%，每连接 CPU 下降 21%–28%，单 worker 串行建连速度提升 12.8%。代价是回环压测里每秒新建连接数下降 10%–18%（压测生成器自身接近占满一个核，该场景为串行建连受限）。
+- `perf/codec`: Sudoku 表查找改为位集，解码按块处理，编码使用 wyrand 无分支路径；`apis` 跨连接共享已构建的表。解码输出与 v0.5.1 golden 向量逐字节一致。编码器随机数的抽取顺序有调整，wire 字节序列不同但解码等价（测试中的 `wire_compat` 摘要已重新生成）。
+- `perf/mux`: 多条并发 stream 的小帧合并为一次写入；keepalive 统一为一套实现，不再为每帧写时间戳；每条 stream 的内存减半（内嵌 cond，共享占位地址）。
+- `perf/httpmask`: 空闲 split session 不再每 5ms 唤醒；上传 body 读入按 Content-Length 取尺寸的池化缓冲；上传批次原地发送；下行 pull 的池化缓冲直接交给连接；请求头值与带序号的上传 URL 预先构造；空闲 session 由单个定时器回收而不是各占一个 goroutine；每个 session 只保留一个 pull 租约。
+- `perf/handshake`: 每条 KIP 消息与 OpenTCP 各用一次写入（原为两次）；地址编解码零分配（`AppendAddress` / `DecodeAddress`）；探测读缓冲仅在需要再读时分配。
+- `perf/app`: UDP 中继每个数据报零分配；路由规则每次决策只查一次；HTTP 代理请求读取器回收复用；SOCKS4 请求一次读取；`logx` 每行日志格式化进池化缓冲并一次写出，零分配。
+- `perf/geodata`: 规则以不可变快照发布，域名集合写时复制；匹配不再分配；纯文本列表绕过 YAML 解析器；下载内容以 string 持有。
+- `perf/dns`: 缓存渲染后的地址，合并并发的同名查询，并限制缓存大小。
+- `perf/reverse`: 响应改写按 Content-Length 取缓冲，根绝对路径 URL 经单个惰性拼接器改写。
+
+### 结构与可读性
+- `refactor/httpmask`: 按职责拆分文件（服务端、会话存储、pull 处理、客户端协议/传输/请求）；`streamSplitConn` 与 `pollConn` 合并为带 codec 的 `splitConn`；stream 与 poll 共用一个 session handler；抽出 `sessionStore`；`DialTunnel` 拆为各模式的小函数；重试常量命名并展平循环。
+- `refactor/tunnel`: `HandshakeAndUpgradeWithTablesMeta` 重命名为 `ServerHandshake`；stream 与 early 握手共用一套 hello 交换；连接包装集中到 `conns.go`，mux stream 到 `mux_stream.go`；`closeNoSend` 改名 `abort`；四个 `dialBase*` 变体与重复的密钥派生导出合并；仅包内使用的名字改为未导出。
+- `refactor/app`: 路由动作改为 `routeAction` 类型而非字符串；用户白名单准入抽成 `rejectReason`；UDP 中继按数据报拆分；`client_socks5.go` 按职责拆分；客户端协议处理器改名为 `handleSocks5`、`handleSocks4`、`serveMixed`；原 `internal/handler` 并入 `internal/app/fallback.go`。
+- `refactor/protocol`: UoT、SOCKS5 UDP 与 KIP 共用同一个 IP 地址编码器 `AppendAddrPort`。
+- `refactor/geodata`: `manager.go` 按职责拆为解析、缓存、下载、匹配与地址段；`MatchCN` 更名为 `MatchRuleOrLocal`，LAN 地址段常量改为字节判断。
+- `refactor/reverse`: `manager.go` 拆为 manager、router、proxy；响应改写移入 `rewrite` 子包；去掉未使用的 `userHash` 与 client id 参数。
+- `refactor/config`: `Finalize` 拆为按配置段的小步骤；枚举规整统一走 `normalizeChoice`；HTTP mask 与 multiplex 访问器移到 `httpmask.go`；值规整函数移到 `normalize.go`；CLI 向导直接依赖 `Config.Finalize`。
+- `refactor/misc`: `dnsutil.ResolveWithCache` 更名为 `Resolve`，`RecommendedClientResolver` 更名为 `ClientResolver`；`connutil.go` / `ed25519.go` 按内容改名为 `halfclose.go` / `keypair.go`；删除不可达分支、永不触发的 nil 守卫与只被使用一次的包装函数。
+
+### 行为变化与修复
+- `app`: `Accept` 失败时退避重试而不是空转；SOCKS4 请求超长时直接关闭连接；HTTP CONNECT 握手阶段读到的早到字节不再丢弃，会转发给目标。
+- `geodata`: 规则下载限制为 32 MiB，并在下载结束后关闭该次下载的 transport；关键字匹配顺序固定为排序后的顺序；修复 srcset 索引 0 的处理。
+- `config`: `Save` 现在会返回 `Close` 的错误。
+- `mux`: `Write` 返回时帧可能尚在合并队列中，尚未写到线上。
+- `dns`: 移除内置 DoT 支持，默认仍为 DoH。
+- `httpmask`: 每个 session 保证只有一个 pull 租约，并移除 `downlinkMu`。
+
+### 测试
 - `tests`: 新增 `users` 白名单在 no-httpmask、legacy、stream、poll、ws 下的端到端测试，以及 UoT 与 TCP 吞吐对比基准（`SUDOKU_UOT_BENCH=1`）。
+- `tests/interop`: 新增进程级互通测试 `TestInteropWithReference`，以 `SUDOKU_REF_BIN` 指向发布版二进制，在传输 × 编码矩阵上双向（当前客户端→参考服务端、参考客户端→当前服务端）运行回显、域名目标、大流量、半关闭、并发、UDP、fallback 与 key update 等负载，以及 reverse 代理；失败用例会自动以参考版对参考版做对照。
+- `tests/perfcmp`: 新增 `TestPerfCompare`，对照参考二进制报告吞吐、每单位工作量的 CPU、峰值与空闲 RSS，包含 1、16、64 并发建连场景。
+- 精简重复与过度细碎的测试，删除对已移除内部名字的测试，并用 v0.5.1 golden 向量固定编解码。
 
 ## v0.5.0（2026-09-05）
 - `BREAKING/httpmask`: 非 WebSocket 的 `auto`、`stream`、`poll` 重构为 v0.5 session 上传序列协议。每个上传批次带单调递增序号；CDN 在服务端已收包后丢失 HTTP 响应时，客户端以同一序号和原始负载重试，服务端幂等确认而不重复写入。非 WS HTTPMask 的客户端和服务端必须同时升级到 v0.5.0；旧 v0.4.x 非 WS peer 会被明确拒绝。
