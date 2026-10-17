@@ -224,20 +224,26 @@ func dialWSTunnel(ctx context.Context, serverAddress string, opts TunnelDialOpti
 	if err != nil {
 		return nil, err
 	}
+	return upgradeDialedConn(c, opts)
+}
+
+// upgradeDialedConn runs the early-handshake wrapper (when the handshake is ready) or Upgrade on a freshly dialed
+// conn. A nil result from the wrapper keeps raw; on error raw is closed.
+func upgradeDialedConn(raw net.Conn, opts TunnelDialOptions) (net.Conn, error) {
 	wrap := opts.Upgrade
 	if eh := opts.EarlyHandshake; eh != nil && eh.WrapConn != nil && (eh.Ready == nil || eh.Ready()) {
 		wrap = eh.WrapConn
 	}
 	if wrap == nil {
-		return c, nil
+		return raw, nil
 	}
-	upgraded, err := wrap(c)
+	upgraded, err := wrap(raw)
 	if err != nil {
-		_ = c.Close()
+		_ = raw.Close()
 		return nil, err
 	}
 	if upgraded == nil {
-		return c, nil
+		return raw, nil
 	}
 	return upgraded, nil
 }
