@@ -477,6 +477,53 @@ func TestGoldenUploadSequenceAndStatuses(t *testing.T) {
 	}
 }
 
+// A malformed upload body is answered in place in stream mode but handed back
+// as a rejected request in poll mode when PassThroughOnReject is set.
+func TestGoldenBadUploadBodyDiffersBetweenModes(t *testing.T) {
+	const upload = "/api/v1/upload"
+	for _, tunnel := range []string{"stream", "poll"} {
+		t.Run(tunnel, func(t *testing.T) {
+			srv := NewTunnelServer(TunnelServerOptions{Mode: tunnel, PassThroughOnReject: true})
+			token, _ := openGoldenSession(t, srv, tunnel, "")
+			request := goldenRequest("POST", upload+"?seq=1&token="+token, tunnel, "", "Content-Length: abc")
+			ex := runGoldenExchange(t, srv, request, false)
+			if tunnel == "poll" {
+				requireGoldenReplay(t, ex, request, true)
+				return
+			}
+			if ex.result != HandleDone || ex.reply != goldenReply400 {
+				t.Fatalf("result=%v reply=%q, want %q", ex.result, ex.reply, goldenReply400)
+			}
+		})
+	}
+}
+
+func TestGoldenUploadBodyLimits(t *testing.T) {
+	const upload = "/api/v1/upload"
+	cases := []struct {
+		name   string
+		tunnel string
+		body   string
+		want   string
+	}{
+		{"stream at the cap", "stream", strings.Repeat("a", 1<<20), goldenReply200},
+		{"stream over the cap", "stream", strings.Repeat("a", 1<<20+1), goldenReply413},
+		{"poll bad base64", "poll", "!!!!\n", goldenReply400},
+		{"poll blank lines are skipped", "poll", "\n\r\nYWJj\n\n", goldenReply200},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewTunnelServer(TunnelServerOptions{Mode: tc.tunnel})
+			token, app := openGoldenSession(t, srv, tc.tunnel, "")
+			go func() { _, _ = io.Copy(io.Discard, app) }()
+			ex := runGoldenExchange(t, srv, goldenRequest("POST", upload+"?seq=1&token="+token, tc.tunnel, tc.body), false)
+			if ex.result != HandleDone || ex.reply != tc.want {
+				t.Fatalf("result=%v reply=%.80q, want %q", ex.result, ex.reply, tc.want)
+			}
+		})
+	}
+}
+
 func TestGoldenControlRequests(t *testing.T) {
 	const upload = "/api/v1/upload"
 	for _, tunnel := range []string{"stream", "poll"} {

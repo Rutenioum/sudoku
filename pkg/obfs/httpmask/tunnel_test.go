@@ -423,7 +423,7 @@ func TestTunnelServer_NewPullTakesOverWithoutLosingDownlink(t *testing.T) {
 	firstClient, firstServer := net.Pipe()
 	firstDone := make(chan struct{})
 	go func() {
-		_, _, _ = srv.streamPull(firstServer, token)
+		_, _, _ = srv.pull(firstServer, token, streamCodec)
 		close(firstDone)
 	}()
 	firstReader := bufio.NewReader(firstClient)
@@ -436,7 +436,7 @@ func TestTunnelServer_NewPullTakesOverWithoutLosingDownlink(t *testing.T) {
 	secondClient, secondServer := net.Pipe()
 	secondDone := make(chan struct{})
 	go func() {
-		_, _, _ = srv.streamPull(secondServer, token)
+		_, _, _ = srv.pull(secondServer, token, streamCodec)
 		close(secondDone)
 	}()
 	secondReader := bufio.NewReader(secondClient)
