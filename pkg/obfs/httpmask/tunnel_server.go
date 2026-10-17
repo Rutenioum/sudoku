@@ -95,6 +95,10 @@ type tunnelSession struct {
 	pendingDownlink []byte
 }
 
+func newTunnelSession(conn net.Conn) *tunnelSession {
+	return &tunnelSession{conn: conn, closed: make(chan struct{}), lastActive: time.Now(), nextUploadSeq: 1}
+}
+
 type sessionPullLease struct {
 	cancel   chan struct{}
 	done     chan struct{}
@@ -500,7 +504,7 @@ func (s *TunnelServer) handleStream(rawConn net.Conn, req *httpRequestHeader, he
 
 	// Only accept plausible paths to reduce accidental exposure.
 	path, ok := stripPathRoot(s.pathRoot, u.Path)
-	if !ok || !s.isAllowedBasePath(path) {
+	if !ok || !isAllowedBasePath(path) {
 		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 	}
 	token := u.Query().Get("token")
@@ -585,7 +589,7 @@ func (s *TunnelServer) handleStream(rawConn net.Conn, req *httpRequestHeader, he
 	}
 }
 
-func (s *TunnelServer) isAllowedBasePath(path string) bool {
+func isAllowedBasePath(path string) bool {
 	for _, p := range paths {
 		if path == p {
 			return true
@@ -670,7 +674,7 @@ func (s *TunnelServer) handlePoll(rawConn net.Conn, req *httpRequestHeader, head
 	}
 
 	path, ok := stripPathRoot(s.pathRoot, u.Path)
-	if !ok || !s.isAllowedBasePath(path) {
+	if !ok || !isAllowedBasePath(path) {
 		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 	}
 	token := u.Query().Get("token")
@@ -765,7 +769,7 @@ func (s *TunnelServer) sessionAuthorize(rawConn net.Conn, headerBytes, buffered,
 	}
 
 	s.mu.Lock()
-	s.sessions[token] = &tunnelSession{conn: c2, closed: make(chan struct{}), lastActive: time.Now(), nextUploadSeq: 1}
+	s.sessions[token] = newTunnelSession(c2)
 	s.mu.Unlock()
 
 	go s.reapLater(token)
@@ -789,9 +793,6 @@ func newSessionToken() (string, error) {
 
 func (s *TunnelServer) reapLater(token string) {
 	ttl := s.sessionTTL
-	if ttl <= 0 {
-		return
-	}
 
 	timer := time.NewTimer(ttl)
 	defer timer.Stop()
@@ -891,9 +892,7 @@ func (s *TunnelServer) sessionClose(token string) {
 	}
 	s.mu.Unlock()
 	if ok {
-		if sess.closed != nil {
-			sess.closeOnce.Do(func() { close(sess.closed) })
-		}
+		sess.closeOnce.Do(func() { close(sess.closed) })
 		sess.pullMu.Lock()
 		lease := sess.pull
 		sess.pullMu.Unlock()
@@ -907,10 +906,7 @@ func (s *TunnelServer) sessionCloseWrite(token string) {
 }
 
 func (s *TunnelServer) sessionHalfClose(token string, direction sessionDirection) {
-	var (
-		conn       net.Conn
-		closeWrite bool
-	)
+	var closeWrite, removed bool
 
 	s.mu.Lock()
 	sess, ok := s.sessions[token]
@@ -930,24 +926,16 @@ func (s *TunnelServer) sessionHalfClose(token string, direction sessionDirection
 	}
 	if sess.uplinkClosed && sess.downlinkClosed {
 		delete(s.sessions, token)
-		if sess.closed != nil {
-			sess.closeOnce.Do(func() { close(sess.closed) })
-		}
+		removed = true
+		sess.closeOnce.Do(func() { close(sess.closed) })
 	}
-	conn = sess.conn
 	s.mu.Unlock()
 
 	if closeWrite {
-		_ = connutil.TryCloseWrite(conn)
+		_ = connutil.TryCloseWrite(sess.conn)
 	}
-	// When both directions are complete the session has been removed. Closing
-	// the backing connection is safe after the optional half-close above and
-	// prevents a leaked pipe from surviving its token.
-	s.mu.Lock()
-	_, stillPresent := s.sessions[token]
-	s.mu.Unlock()
-	if !stillPresent {
-		_ = conn.Close()
+	if removed {
+		_ = sess.conn.Close()
 	}
 }
 

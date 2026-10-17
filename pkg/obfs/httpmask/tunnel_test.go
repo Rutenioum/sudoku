@@ -316,7 +316,7 @@ func TestTunnelServer_UploadSequenceIsIdempotent(t *testing.T) {
 		_ = sessionConn.Close()
 	})
 
-	sess := &tunnelSession{conn: sessionConn, lastActive: time.Now(), nextUploadSeq: 1}
+	sess := newTunnelSession(sessionConn)
 	srv.sessions["session"] = sess
 
 	firstRead := make(chan []byte, 1)
@@ -360,7 +360,7 @@ func TestTunnelServer_NewPullTakesOverWithoutLosingDownlink(t *testing.T) {
 	})
 
 	const token = "session"
-	srv.sessions[token] = &tunnelSession{conn: sessionConn, lastActive: time.Now(), nextUploadSeq: 1}
+	srv.sessions[token] = newTunnelSession(sessionConn)
 
 	firstClient, firstServer := net.Pipe()
 	firstDone := make(chan struct{})
