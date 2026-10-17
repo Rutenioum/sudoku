@@ -42,6 +42,8 @@ const (
 	tunnelStreamEOFHeader     = "X-Sudoku-Stream-EOF"
 	tunnelUploadSequenceQuery = "seq"
 	tunnelUploadSequenceCap   = "upload-seq"
+	// Enough sockets to overlap authorize, pull and the first upload; a fourth
+	// "spare" would add a WAN RTT before mux can open its first stream.
 	tunnelPreconnectCount     = 3
 	tunnelTLSHandshakeTimeout = 10 * time.Second
 )
@@ -73,13 +75,6 @@ func canonicalHeaderHost(urlHost, scheme string) string {
 		return "[" + host + "]"
 	}
 	return host
-}
-
-func sessionPreconnectCount() int {
-	// Three connections are enough to overlap authorize, pull and the first
-	// upload. Mux used to wait for a fourth "spare" connection before it was
-	// usable, which added a full WAN RTT to every split-tunnel session.
-	return tunnelPreconnectCount
 }
 
 func parseAuthorizeResponse(body []byte) (*authorizeResponse, error) {
@@ -369,10 +364,7 @@ func dialSession(ctx context.Context, serverAddress string, opts TunnelDialOptio
 	req.Host = headerHost
 	applyTunnelHeaders(req.Header, headerHost, mode)
 
-	// Overlap authorization, initial pull, and initial push connection handshakes.
-	// Keeping this to three avoids adding an extra WAN RTT before mux can open
-	// its first logical stream.
-	cancelPreconnect := httpClient.preconnect(ctx, req, sessionPreconnectCount())
+	cancelPreconnect := httpClient.preconnect(ctx, req, tunnelPreconnectCount)
 	keepPreconnected := false
 	defer func() {
 		if !keepPreconnected {
