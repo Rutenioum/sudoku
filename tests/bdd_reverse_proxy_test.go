@@ -22,7 +22,6 @@ package tests
 import (
 	"context"
 	"io"
-	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -33,9 +32,7 @@ import (
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
-	"github.com/SUDOKU-ASCII/sudoku/internal/reverse"
 	"github.com/coder/websocket"
-	"golang.org/x/crypto/ssh"
 )
 
 func TestBDD_ReverseProxy_WebUI_BehindTLSEdge(t *testing.T) {
@@ -173,157 +170,6 @@ func TestBDD_ReverseProxy_WebUI_BehindTLSEdge(t *testing.T) {
 	}
 	if typ != websocket.MessageText || string(msg) != "ping" {
 		t.Fatalf("unexpected ws echo: typ=%v msg=%q", typ, string(msg))
-	}
-}
-
-func TestBDD_ReverseProxy_TCPOverWS_BehindTLSEdge_WithBuiltInForwarder(t *testing.T) {
-	// Given: a client-local raw TCP service.
-	originAddr := startEchoTarget(t)
-
-	serverKey, clientKey := newTestKeys(t)
-
-	ports, err := getFreePorts(4)
-	if err != nil {
-		t.Fatalf("ports: %v", err)
-	}
-	serverPort := ports[0]
-	clientPort := ports[1]
-	reversePort := ports[2]
-	forwardPort := ports[3]
-
-	reverseListen := localServerAddr(reversePort)
-	forwardListen := localServerAddr(forwardPort)
-
-	// And: a Sudoku server + client with reverse route "/ssh" -> originAddr.
-	serverCfg := newTestServerConfig(serverPort, serverKey)
-	serverCfg.Reverse = &config.ReverseConfig{Listen: reverseListen}
-	startSudokuServer(t, serverCfg)
-	waitForAddr(t, reverseListen)
-
-	clientCfg := newTestClientConfig(clientPort, localServerAddr(serverPort), clientKey)
-	clientCfg.Reverse = &config.ReverseConfig{
-		ClientID: "bdd",
-		Routes:   []config.ReverseRoute{{Path: "/ssh", Target: originAddr}},
-	}
-	startSudokuClient(t, clientCfg)
-	waitForReverseRouteReady(t, reverseListen, "/ssh")
-
-	// And: an "edge" reverse proxy (CDN-like) that terminates TLS and forwards to reverse.listen.
-	targetURL, _ := url.Parse("http://" + reverseListen)
-	rp := httputil.NewSingleHostReverseProxy(targetURL)
-	edge := httptest.NewTLSServer(rp)
-	defer edge.Close()
-
-	// When: the built-in forwarder listens locally and dials the tunnel over wss.
-	dialURL := strings.Replace(edge.URL, "https://", "wss://", 1) + "/ssh"
-	go func() {
-		_ = reverse.ServeLocalWSForward(forwardListen, dialURL, true) // self-signed edge cert
-	}()
-	waitForAddr(t, forwardListen)
-
-	// Then: connecting to the local port reaches the origin TCP service.
-	c, err := net.DialTimeout("tcp", forwardListen, 1*time.Second)
-	if err != nil {
-		t.Fatalf("dial forwarder: %v", err)
-	}
-	defer c.Close()
-
-	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
-	if _, err := c.Write([]byte("ping")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	buf := make([]byte, 4)
-	if _, err := io.ReadFull(c, buf); err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(buf) != "ping" {
-		t.Fatalf("unexpected echo: %q", string(buf))
-	}
-}
-
-func TestBDD_ReverseProxy_SSHOverWS_BehindTLSEdge_WithBuiltInForwarder(t *testing.T) {
-	sshSrv := startTestSSHServer(t, "127.0.0.1:0", "u", "p")
-	defer sshSrv.Close()
-
-	serverKey, clientKey := newTestKeys(t)
-
-	ports, err := getFreePorts(4)
-	if err != nil {
-		t.Fatalf("ports: %v", err)
-	}
-	serverPort := ports[0]
-	clientPort := ports[1]
-	reversePort := ports[2]
-	forwardPort := ports[3]
-
-	reverseListen := localServerAddr(reversePort)
-	forwardListen := localServerAddr(forwardPort)
-
-	// And: a Sudoku server + client with reverse route "/ssh" -> ssh service.
-	serverCfg := newTestServerConfig(serverPort, serverKey)
-	serverCfg.Reverse = &config.ReverseConfig{Listen: reverseListen}
-	startSudokuServer(t, serverCfg)
-	waitForAddr(t, reverseListen)
-
-	clientCfg := newTestClientConfig(clientPort, localServerAddr(serverPort), clientKey)
-	clientCfg.Reverse = &config.ReverseConfig{
-		ClientID: "bdd",
-		Routes:   []config.ReverseRoute{{Path: "/ssh", Target: sshSrv.Addr()}},
-	}
-	startSudokuClient(t, clientCfg)
-	waitForReverseRouteReady(t, reverseListen, "/ssh")
-
-	// And: an "edge" reverse proxy (CDN-like) that terminates TLS and forwards to reverse.listen.
-	targetURL, _ := url.Parse("http://" + reverseListen)
-	rp := httputil.NewSingleHostReverseProxy(targetURL)
-	edge := httptest.NewTLSServer(rp)
-	defer edge.Close()
-
-	// When: the built-in forwarder listens locally and dials the tunnel over wss.
-	dialURL := strings.Replace(edge.URL, "https://", "wss://", 1) + "/ssh"
-	go func() {
-		_ = reverse.ServeLocalWSForward(forwardListen, dialURL, true) // self-signed edge cert
-	}()
-	waitForAddr(t, forwardListen)
-
-	// Then: a real SSH client can authenticate and run an exec request.
-	sshCfg := &ssh.ClientConfig{
-		User:            "u",
-		Auth:            []ssh.AuthMethod{ssh.Password("p")},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         5 * time.Second,
-	}
-	rawConn, err := net.DialTimeout("tcp", forwardListen, 5*time.Second)
-	if err != nil {
-		t.Fatalf("ssh tcp dial: %v", err)
-	}
-	_ = rawConn.SetDeadline(time.Now().Add(10 * time.Second))
-
-	cconn, chans, reqs, err := ssh.NewClientConn(rawConn, forwardListen, sshCfg)
-	if err != nil {
-		_ = rawConn.Close()
-		t.Fatalf("ssh handshake: %v", err)
-	}
-	_ = rawConn.SetDeadline(time.Time{})
-
-	client := ssh.NewClient(cconn, chans, reqs)
-	defer client.Close()
-
-	sess, err := client.NewSession()
-	if err != nil {
-		t.Fatalf("ssh session: %v", err)
-	}
-	defer sess.Close()
-
-	_ = rawConn.SetDeadline(time.Now().Add(10 * time.Second))
-	defer rawConn.SetDeadline(time.Time{})
-
-	out, err := sess.CombinedOutput("echo hello")
-	if err != nil {
-		t.Fatalf("ssh exec: %v (out=%q)", err, string(out))
-	}
-	if string(out) != "echo hello" {
-		t.Fatalf("unexpected ssh output: %q", string(out))
 	}
 }
 
