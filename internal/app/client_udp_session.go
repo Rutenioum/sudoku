@@ -137,7 +137,7 @@ func (s *uotClientSession) pipeClientToServer() {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		decision := decideRoute(s.cfg, s.routeMgrs, destAddr, destIP)
-		actionKey := decision.action
+		actionKey := decision.action.String()
 
 		if decision.action == routeActionReject {
 			if s.logOnce.Allow(actionKey+"|"+destAddr, s.logTTL) {
@@ -176,7 +176,7 @@ func (s *uotClientSession) pipeClientToServer() {
 			}
 		}
 
-		if s.logOnce.Allow(decision.action+"|"+destAddr, s.logTTL) {
+		if s.logOnce.Allow(decision.action.String()+"|"+destAddr, s.logTTL) {
 			logRoute("UDP", addr, destAddr, decision)
 		}
 		cancel()

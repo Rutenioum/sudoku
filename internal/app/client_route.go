@@ -38,16 +38,29 @@ var resolveWithCache = func(ctx context.Context, resolver *dnsutil.Resolver, add
 	return dnsutil.ResolveWithCache(ctx, addr)
 }
 
-type routeDecision struct {
-	action string
-	match  string
-}
+type routeAction uint8
 
 const (
-	routeActionProxy  = "PROXY"
-	routeActionDirect = "DIRECT"
-	routeActionReject = "REJECT"
+	routeActionProxy routeAction = iota
+	routeActionDirect
+	routeActionReject
 )
+
+func (a routeAction) String() string {
+	switch a {
+	case routeActionDirect:
+		return "DIRECT"
+	case routeActionReject:
+		return "REJECT"
+	default:
+		return "PROXY"
+	}
+}
+
+type routeDecision struct {
+	action routeAction
+	match  string
+}
 
 type routeManagers struct {
 	direct *geodata.Manager
@@ -80,7 +93,7 @@ func (d routeDecision) shouldProxy() bool {
 	return d.action == routeActionProxy
 }
 
-func (m *routeManagers) managerForAction(action string) *geodata.Manager {
+func (m *routeManagers) managerForAction(action routeAction) *geodata.Manager {
 	if m == nil {
 		return nil
 	}
@@ -126,7 +139,7 @@ func decideRoute(cfg *config.Config, mgrs *routeManagers, destAddr string, destI
 	}
 }
 
-func matchRuleManager(mgrs *routeManagers, action string, destAddr string, destIP net.IP) (bool, string) {
+func matchRuleManager(mgrs *routeManagers, action routeAction, destAddr string, destIP net.IP) (bool, string) {
 	mgr := mgrs.managerForAction(action)
 	if mgr == nil {
 		return false, ""
@@ -137,7 +150,7 @@ func matchRuleManager(mgrs *routeManagers, action string, destAddr string, destI
 		ok, m = mgr.MatchRule(destAddr, destIP)
 	}
 	if ok {
-		return true, action + "/" + m.String()
+		return true, action.String() + "/" + m.String()
 	}
 	return false, ""
 }
@@ -147,12 +160,13 @@ func logRoute(network string, src net.Addr, destAddr string, decision routeDecis
 	if src != nil {
 		srcStr = src.String()
 	}
-	actionText := logx.Bold(logx.Magenta(decision.action))
+	name := decision.action.String()
+	actionText := logx.Bold(logx.Magenta(name))
 	switch decision.action {
 	case routeActionDirect:
-		actionText = logx.Bold(logx.Green(decision.action))
+		actionText = logx.Bold(logx.Green(name))
 	case routeActionReject:
-		actionText = logx.Bold(logx.Red(decision.action))
+		actionText = logx.Bold(logx.Red(name))
 	}
 	logx.Infof(strings.ToUpper(strings.TrimSpace(network)), "%s --> %s match %s using %s", srcStr, destAddr, logx.Yellow(decision.match), actionText)
 }
