@@ -54,11 +54,7 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 		return nil
 	}
 
-	reqPath := ""
-	if resp.Request != nil && resp.Request.URL != nil {
-		reqPath = resp.Request.URL.Path
-	}
-	pathCT := inferContentTypeFromPath(reqPath)
+	pathCT := inferContentTypeFromPath(resp.Request.URL.Path)
 
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	if i := strings.Index(ct, ";"); i >= 0 {

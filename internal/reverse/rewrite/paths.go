@@ -32,19 +32,13 @@ func normalizedPrefixBytes(prefix string) []byte {
 	return []byte(p)
 }
 
+// NormalizePrefix returns prefix with a leading slash and no trailing one, or "" for the root.
 func NormalizePrefix(prefix string) string {
 	prefix = strings.TrimSpace(prefix)
-	if prefix == "" || prefix == "/" {
-		return ""
-	}
 	if !strings.HasPrefix(prefix, "/") {
 		prefix = "/" + prefix
 	}
-	prefix = strings.TrimRight(prefix, "/")
-	if prefix == "" || prefix == "/" {
-		return ""
-	}
-	return prefix
+	return strings.TrimRight(prefix, "/")
 }
 
 // splicer builds a copy of src with some ranges replaced. It allocates only once the first
