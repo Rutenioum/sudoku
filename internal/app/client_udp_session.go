@@ -213,8 +213,9 @@ func (s *uotClientSession) logRouteOnce(from netip.AddrPort, destAddr string, de
 
 func (s *uotClientSession) pipeServerToClient() {
 	var reply []byte
+	datagrams := tunnel.NewUoTReader(s.uotConn)
 	for {
-		addr, payload, err := tunnel.ReadUoTDatagram(s.uotConn)
+		addr, payload, err := datagrams.ReadDatagram()
 		if err != nil {
 			s.close()
 			return

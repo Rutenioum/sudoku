@@ -20,7 +20,6 @@ with this application without prior consent.
 package app
 
 import (
-	"bytes"
 	"fmt"
 	"net"
 	"strings"
@@ -262,7 +261,7 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 		}
 		return
 	case tunnel.KIPTypeOpenTCP:
-		destAddrStr, _, _, err := protocol.ReadAddress(bytes.NewReader(msg.Payload))
+		destAddrStr, err := protocol.DecodeAddress(msg.Payload)
 		if err != nil {
 			logx.Warnf("Server", "Failed to decode target address: %v", err)
 			return
