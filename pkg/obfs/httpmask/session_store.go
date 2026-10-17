@@ -33,11 +33,10 @@ const minReapInterval = 50 * time.Millisecond
 // carries tunnel bytes plus the bookkeeping HTTP requests need to share it.
 type tunnelSession struct {
 	conn           *halfPipeConn
-	lastActive     time.Time // guarded by sessionStore.mu
-	uplinkClosed   bool      // guarded by sessionStore.mu
-	downlinkClosed bool      // guarded by sessionStore.mu
-	closed         chan struct{}
-	closeOnce      sync.Once
+	lastActive     time.Time   // guarded by sessionStore.mu
+	uplinkClosed   bool        // guarded by sessionStore.mu
+	downlinkClosed bool        // guarded by sessionStore.mu
+	reaper         *time.Timer // set under sessionStore.mu before the session is visible
 
 	uploadMu      sync.Mutex
 	nextUploadSeq uint64
@@ -49,12 +48,12 @@ type tunnelSession struct {
 }
 
 func newTunnelSession(conn *halfPipeConn) *tunnelSession {
-	return &tunnelSession{conn: conn, closed: make(chan struct{}), lastActive: time.Now(), nextUploadSeq: 1}
+	return &tunnelSession{conn: conn, lastActive: time.Now(), nextUploadSeq: 1}
 }
 
-// shutdown wakes the reaper, stops the active pull and closes the tunnel pipe.
+// shutdown disarms the reaper, stops the active pull and closes the tunnel pipe.
 func (sess *tunnelSession) shutdown() {
-	sess.closeOnce.Do(func() { close(sess.closed) })
+	sess.reaper.Stop()
 	sess.pullMu.Lock()
 	lease := sess.pull
 	sess.pullMu.Unlock()
@@ -109,13 +108,13 @@ func newSessionStore(ttl time.Duration) *sessionStore {
 	return &sessionStore{ttl: ttl, byToken: make(map[string]*tunnelSession)}
 }
 
-// add registers a session for conn and starts its idle reaper.
+// add registers a session for conn and arms its idle reaper.
 func (st *sessionStore) add(token string, conn *halfPipeConn) *tunnelSession {
 	sess := newTunnelSession(conn)
 	st.mu.Lock()
 	st.byToken[token] = sess
+	sess.reaper = time.AfterFunc(st.ttl, func() { st.reap(token, sess) })
 	st.mu.Unlock()
-	go st.reapWhenIdle(token, sess)
 	return sess
 }
 
@@ -194,7 +193,6 @@ func (st *sessionStore) halfClose(token string, uplink bool) {
 	if sess.uplinkClosed && sess.downlinkClosed {
 		delete(st.byToken, token)
 		removed = true
-		sess.closeOnce.Do(func() { close(sess.closed) })
 	}
 	st.mu.Unlock()
 
@@ -202,6 +200,7 @@ func (st *sessionStore) halfClose(token string, uplink bool) {
 		_ = connutil.TryCloseWrite(sess.conn)
 	}
 	if removed {
+		sess.reaper.Stop()
 		_ = sess.conn.Close()
 	}
 }
@@ -232,22 +231,17 @@ func (st *sessionStore) beginPull(token string, sess *tunnelSession, rawConn net
 	}
 }
 
-func (st *sessionStore) reapWhenIdle(token string, sess *tunnelSession) {
-	timer := time.NewTimer(st.ttl)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-timer.C:
-		case <-sess.closed:
-			return
-		}
-		next, done := st.reapIfIdle(token, sess)
-		if done {
-			return
-		}
+// reap runs when the reaper fires and re-arms it unless sess is gone.
+func (st *sessionStore) reap(token string, sess *tunnelSession) {
+	next, done := st.reapIfIdle(token, sess)
+	if done {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.byToken[token] == sess {
 		// Best-effort cleanup does not need a tight loop under constant activity.
-		timer.Reset(max(next, minReapInterval))
+		sess.reaper.Reset(max(next, minReapInterval))
 	}
 }
 
