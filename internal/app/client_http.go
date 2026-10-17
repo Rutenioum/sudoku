@@ -102,17 +102,8 @@ func ensureHostPort(host string, method string) string {
 
 	port := defaultPortForMethod(method)
 
-	trimmed := host
-	if strings.HasPrefix(trimmed, "[") {
-		trimmed = strings.TrimPrefix(trimmed, "[")
-	}
-	if strings.HasSuffix(trimmed, "]") {
-		trimmed = strings.TrimSuffix(trimmed, "]")
-	}
+	trimmed := strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 	if ip := net.ParseIP(trimmed); ip != nil {
-		return net.JoinHostPort(ip.String(), port)
-	}
-	if ip := net.ParseIP(host); ip != nil {
 		return net.JoinHostPort(ip.String(), port)
 	}
 	return net.JoinHostPort(host, port)
