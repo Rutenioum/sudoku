@@ -26,11 +26,11 @@ import (
 	"time"
 )
 
-// queuedConn provides a net.Conn-like interface backed by internal channels.
+// chanConn provides a net.Conn-like interface backed by internal channels.
 //
 // It is used by HTTP tunnel modes (stream/poll) to bridge HTTP request/response bodies to
 // a byte-stream API while preserving CloseWrite semantics.
-type queuedConn struct {
+type chanConn struct {
 	rxc    chan []byte
 	closed chan struct{}
 
@@ -46,20 +46,42 @@ type queuedConn struct {
 	readEOFOnce   sync.Once
 	readMu        sync.Mutex
 
-	mu         sync.Mutex
-	readBuf    []byte
-	closeErr   error
-	localAddr  net.Addr
-	remoteAddr net.Addr
+	mu          sync.Mutex
+	readBuf     []byte // unread tail of readPayload
+	readPayload []byte
+	closeErr    error
+	localAddr   net.Addr
+	remoteAddr  net.Addr
 }
 
-const queuedConnPayloadQueueDepth = 64
+const chanConnQueueDepth = 64
 
-func newQueuedConn() queuedConn {
-	return queuedConn{
-		rxc:         make(chan []byte, queuedConnPayloadQueueDepth),
+const (
+	pullPayloadBytes = 32 * 1024
+	// A payload at least this full is queued as the pooled buffer it was read into; smaller ones are copied out so a
+	// full queue of tiny payloads does not pin 32KiB each.
+	pullHandoverMinBytes = pullPayloadBytes / 2
+)
+
+var pullPayloadPool = sync.Pool{New: func() any { return new([pullPayloadBytes]byte) }}
+
+func getPullPayload() *[pullPayloadBytes]byte { return pullPayloadPool.Get().(*[pullPayloadBytes]byte) }
+
+func putPullPayload(buf *[pullPayloadBytes]byte) { pullPayloadPool.Put(buf) }
+
+// recyclePayload returns a fully read payload to the pool when it is a whole pooled-size buffer; only the
+// receiving conn references it by then.
+func recyclePayload(p []byte) {
+	if cap(p) == pullPayloadBytes {
+		putPullPayload((*[pullPayloadBytes]byte)(p[:pullPayloadBytes]))
+	}
+}
+
+func newChanConn() chanConn {
+	return chanConn{
+		rxc:         make(chan []byte, chanConnQueueDepth),
 		closed:      make(chan struct{}),
-		writeCh:     make(chan []byte, queuedConnPayloadQueueDepth),
+		writeCh:     make(chan []byte, chanConnQueueDepth),
 		writeClosed: make(chan struct{}),
 		writeDone:   make(chan struct{}),
 		readEOF:     make(chan struct{}),
@@ -68,45 +90,34 @@ func newQueuedConn() queuedConn {
 	}
 }
 
-func (c *queuedConn) CloseWrite() error {
-	if c == nil || c.writeClosed == nil {
-		return nil
-	}
+func (c *chanConn) CloseWrite() error {
 	c.writeGate.Lock()
 	if !isClosedPipeChan(c.writeClosed) {
 		close(c.writeClosed)
 	}
 	c.writeGate.Unlock()
 
-	writeDone := c.writeDone
-	closed := c.closed
-	if writeDone == nil {
-		return nil
-	}
 	select {
-	case <-writeDone:
+	case <-c.writeDone:
 		return c.completedWriteErr()
 	default:
 	}
 	select {
-	case <-writeDone:
+	case <-c.writeDone:
 		return c.completedWriteErr()
-	case <-closed:
+	case <-c.closed:
 		return c.closedErr()
 	}
 }
 
-func (c *queuedConn) completedWriteErr() error {
+func (c *chanConn) completedWriteErr() error {
 	c.mu.Lock()
 	err := c.writeErr
 	c.mu.Unlock()
 	return err
 }
 
-func (c *queuedConn) completeWrite(err error) {
-	if c == nil || c.writeDone == nil {
-		return
-	}
+func (c *chanConn) completeWrite(err error) {
 	c.mu.Lock()
 	if c.writeErr == nil {
 		c.writeErr = err
@@ -115,14 +126,11 @@ func (c *queuedConn) completeWrite(err error) {
 	c.writeDoneOnce.Do(func() { close(c.writeDone) })
 }
 
-func (c *queuedConn) markReadEOF() {
-	if c == nil || c.readEOF == nil {
-		return
-	}
+func (c *chanConn) markReadEOF() {
 	c.readEOFOnce.Do(func() { close(c.readEOF) })
 }
 
-func (c *queuedConn) closeWithError(err error) error {
+func (c *chanConn) closeWithError(err error) error {
 	c.mu.Lock()
 	select {
 	case <-c.closed:
@@ -141,7 +149,7 @@ func (c *queuedConn) closeWithError(err error) error {
 	return nil
 }
 
-func (c *queuedConn) closedErr() error {
+func (c *chanConn) closedErr() error {
 	c.mu.Lock()
 	err := c.closeErr
 	c.mu.Unlock()
@@ -151,22 +159,25 @@ func (c *queuedConn) closedErr() error {
 	return err
 }
 
-func (c *queuedConn) Read(b []byte) (n int, err error) {
+func (c *chanConn) Read(b []byte) (n int, err error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
 
 	if len(c.readBuf) == 0 {
 		select {
-		case c.readBuf = <-c.rxc:
+		case p := <-c.rxc:
+			c.startPayload(p)
 		default:
 		}
 	}
 	if len(c.readBuf) == 0 {
 		select {
-		case c.readBuf = <-c.rxc:
+		case p := <-c.rxc:
+			c.startPayload(p)
 		case <-c.readEOF:
 			select {
-			case c.readBuf = <-c.rxc:
+			case p := <-c.rxc:
+				c.startPayload(p)
 			default:
 				return 0, io.EOF
 			}
@@ -176,25 +187,27 @@ func (c *queuedConn) Read(b []byte) (n int, err error) {
 	}
 	n = copy(b, c.readBuf)
 	c.readBuf = c.readBuf[n:]
+	if len(c.readBuf) == 0 {
+		recyclePayload(c.readPayload)
+		c.readPayload = nil
+	}
 	return n, nil
 }
 
-func (c *queuedConn) Write(b []byte) (n int, err error) {
+// startPayload makes p the payload being read, recycling the previous one.
+func (c *chanConn) startPayload(p []byte) {
+	recyclePayload(c.readPayload)
+	c.readPayload = p
+	c.readBuf = p
+}
+
+func (c *chanConn) Write(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
 
 	payload := make([]byte, len(b))
 	copy(payload, b)
-	if c.writeClosed == nil {
-		select {
-		case c.writeCh <- payload:
-			return len(b), nil
-		case <-c.closed:
-			return 0, c.closedErr()
-		}
-	}
-
 	c.writeGate.RLock()
 	defer c.writeGate.RUnlock()
 	select {
@@ -215,9 +228,9 @@ func (c *queuedConn) Write(b []byte) (n int, err error) {
 	}
 }
 
-func (c *queuedConn) LocalAddr() net.Addr  { return c.localAddr }
-func (c *queuedConn) RemoteAddr() net.Addr { return c.remoteAddr }
+func (c *chanConn) LocalAddr() net.Addr  { return c.localAddr }
+func (c *chanConn) RemoteAddr() net.Addr { return c.remoteAddr }
 
-func (c *queuedConn) SetDeadline(time.Time) error      { return nil }
-func (c *queuedConn) SetReadDeadline(time.Time) error  { return nil }
-func (c *queuedConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *chanConn) SetDeadline(time.Time) error      { return nil }
+func (c *chanConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *chanConn) SetWriteDeadline(time.Time) error { return nil }

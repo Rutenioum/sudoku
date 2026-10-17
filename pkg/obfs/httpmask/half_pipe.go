@@ -28,8 +28,10 @@ import (
 )
 
 type pipeDeadline struct {
-	mu     sync.Mutex
+	mu sync.Mutex
+	// timer is reused across set calls; armed says it may still fire.
 	timer  *time.Timer
+	armed  bool
 	cancel chan struct{}
 }
 
@@ -41,10 +43,10 @@ func (d *pipeDeadline) set(t time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.timer != nil && !d.timer.Stop() {
+	if d.armed && !d.timer.Stop() {
 		<-d.cancel
 	}
-	d.timer = nil
+	d.armed = false
 
 	closed := isClosedPipeChan(d.cancel)
 	if t.IsZero() {
@@ -58,9 +60,12 @@ func (d *pipeDeadline) set(t time.Time) {
 		if closed {
 			d.cancel = make(chan struct{})
 		}
-		d.timer = time.AfterFunc(dur, func() {
-			close(d.cancel)
-		})
+		if d.timer == nil {
+			d.timer = time.AfterFunc(dur, d.expire)
+		} else {
+			d.timer.Reset(dur)
+		}
+		d.armed = true
 		return
 	}
 
@@ -68,6 +73,8 @@ func (d *pipeDeadline) set(t time.Time) {
 		close(d.cancel)
 	}
 }
+
+func (d *pipeDeadline) expire() { close(d.cancel) }
 
 func (d *pipeDeadline) wait() <-chan struct{} {
 	d.mu.Lock()
@@ -112,7 +119,7 @@ type halfPipeConn struct {
 	writeDeadline pipeDeadline
 }
 
-func newHalfPipe() (net.Conn, net.Conn) {
+func newHalfPipe() (*halfPipeConn, *halfPipeConn) {
 	cb1 := make(chan []byte)
 	cb2 := make(chan []byte)
 	cn1 := make(chan int)
@@ -179,6 +186,14 @@ func (c *halfPipeConn) Read(p []byte) (int, error) {
 	case <-c.readDeadline.wait():
 		return 0, os.ErrDeadlineExceeded
 	}
+}
+
+// awaitReadable blocks until the peer is writing (or the pipe ends or the read deadline fires) without taking any
+// bytes: a zero-length Read consumes a writer turn with n=0 and the writer re-offers the rest. It lets an idle
+// reader wait without holding a buffer.
+func (c *halfPipeConn) awaitReadable() error {
+	_, err := c.Read(nil)
+	return err
 }
 
 func (c *halfPipeConn) Write(p []byte) (int, error) {
