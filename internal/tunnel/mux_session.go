@@ -497,7 +497,7 @@ type muxStream struct {
 	readMu  sync.Mutex // Serializes Read and WriteTo without blocking enqueue/close.
 
 	mu                sync.Mutex
-	cond              *sync.Cond
+	cond              sync.Cond // cond.L is &mu.
 	closed            bool
 	localReadClosed   bool
 	localWriteClosed  bool
@@ -507,19 +507,15 @@ type muxStream struct {
 	tail              *muxChunk
 	// queuedBytes includes the chunk temporarily owned by WriteTo, if any.
 	queuedBytes int
-
-	localAddr  net.Addr
-	remoteAddr net.Addr
 }
 
+// muxStreamAddr is the placeholder address every stream reports; streams have no network
+// address of their own, and sharing one value saves two allocations per stream.
+var muxStreamAddr net.Addr = &net.TCPAddr{}
+
 func newMuxStream(session *muxSession, id uint32) *muxStream {
-	st := &muxStream{
-		session:    session,
-		id:         id,
-		localAddr:  &net.TCPAddr{},
-		remoteAddr: &net.TCPAddr{},
-	}
-	st.cond = sync.NewCond(&st.mu)
+	st := &muxStream{session: session, id: id}
+	st.cond.L = &st.mu
 	return st
 }
 
@@ -719,8 +715,8 @@ func (c *muxStream) CloseRead() error {
 	return nil
 }
 
-func (c *muxStream) LocalAddr() net.Addr  { return c.localAddr }
-func (c *muxStream) RemoteAddr() net.Addr { return c.remoteAddr }
+func (c *muxStream) LocalAddr() net.Addr  { return muxStreamAddr }
+func (c *muxStream) RemoteAddr() net.Addr { return muxStreamAddr }
 
 func (c *muxStream) SetDeadline(t time.Time) error {
 	_ = c.SetReadDeadline(t)
