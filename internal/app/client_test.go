@@ -34,7 +34,7 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/pkg/geodata"
 )
 
-func newRuleManagerForTest(t *testing.T, payload string) *geodata.Manager {
+func newRuleManagerForTest(t testing.TB, payload string) *geodata.Manager {
 	t.Helper()
 	t.Setenv("SUDOKU_RULE_CACHE_DIR", t.TempDir())
 
