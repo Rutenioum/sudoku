@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SUDOKU-ASCII/sudoku/internal/protocol"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
@@ -76,6 +77,26 @@ var errKIP = errors.New("kip protocol error")
 type KIPMessage struct {
 	Type    byte
 	Payload []byte
+}
+
+// kipHeaderSize is magic | type | u16 payload length.
+const kipHeaderSize = len(kipMagic) + 1 + 2
+
+func appendKIPHeader(dst []byte, typ byte, payloadLen int) []byte {
+	dst = append(dst, kipMagic...)
+	dst = append(dst, typ)
+	return binary.BigEndian.AppendUint16(dst, uint16(payloadLen))
+}
+
+// writeKIPOpenTCP sends an OpenTCP request for addr (host:port) as one write.
+func writeKIPOpenTCP(w io.Writer, addr string) error {
+	buf := appendKIPHeader(make([]byte, 0, kipHeaderSize+protocol.MaxEncodedAddrLen), KIPTypeOpenTCP, 0)
+	buf, err := protocol.AppendAddress(buf, addr)
+	if err != nil {
+		return fmt.Errorf("encode address failed: %w", err)
+	}
+	binary.BigEndian.PutUint16(buf[kipHeaderSize-2:], uint16(len(buf)-kipHeaderSize))
+	return connutil.WriteFull(w, buf)
 }
 
 func WriteKIPMessage(w io.Writer, typ byte, payload []byte) error {

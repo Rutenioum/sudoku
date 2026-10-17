@@ -20,7 +20,6 @@ with this application without prior consent.
 package tunnel
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -29,7 +28,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/SUDOKU-ASCII/sudoku/internal/protocol"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/httpmask"
 )
 
@@ -49,11 +47,10 @@ type MuxDialer struct {
 }
 
 func (d *MuxDialer) Dial(destAddrStr string) (net.Conn, error) {
-	var addrBuf bytes.Buffer
-	if err := protocol.WriteAddress(&addrBuf, destAddrStr); err != nil {
-		return nil, fmt.Errorf("encode address failed: %w", err)
+	payload, err := encodeMuxOpenTarget(destAddrStr)
+	if err != nil {
+		return nil, err
 	}
-	payload := addrBuf.Bytes()
 
 	var lastErr error
 	for range 2 {

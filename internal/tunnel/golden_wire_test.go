@@ -73,8 +73,7 @@ func TestGoldenKIPMessages(t *testing.T) {
 	}
 
 	var open bytes.Buffer
-	openConn := &writeOnlyConn{w: &open}
-	if err := writeKIPOpenTCP(openConn, "example.com:443"); err != nil {
+	if err := writeKIPOpenTCP(&open, "example.com:443"); err != nil {
 		t.Fatal(err)
 	}
 	if got := hex.EncodeToString(open.Bytes()); got != goldenKIPOpenTCP {
@@ -154,14 +153,6 @@ func TestGoldenSessionKeys(t *testing.T) {
 		t.Errorf("session bases = %x / %x", c2s, s2c)
 	}
 }
-
-// writeOnlyConn adapts a writer to net.Conn for helpers that take a connection.
-type writeOnlyConn struct {
-	net.Conn
-	w io.Writer
-}
-
-func (c *writeOnlyConn) Write(p []byte) (int, error) { return c.w.Write(p) }
 
 // captureMuxWrites runs fn against a session and returns everything the session wrote.
 func captureMuxWrites(t *testing.T, fn func(s *muxSession)) []byte {
@@ -326,5 +317,17 @@ func TestGoldenUoTFrames(t *testing.T) {
 		if !bytes.Equal(out, wire) {
 			t.Errorf("UoTWriter(%s) wrote %x, want %x", f.addr, out, wire)
 		}
+	}
+}
+
+// A peer may encode an IPv4-mapped destination as ATYP 4; the release reported it as dotted IPv4.
+func TestUoTDecodeMappedIPv6AsIPv4(t *testing.T) {
+	wire := goldenBytes(t, "00130001"+"04"+"00000000000000000000ffff"+"09090909"+"14e9"+"6d")
+	host, payload, err := ReadUoTDatagram(bytes.NewReader(wire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "9.9.9.9:5353" || string(payload) != "m" {
+		t.Errorf("got (%q, %q), want (9.9.9.9:5353, m)", host, payload)
 	}
 }

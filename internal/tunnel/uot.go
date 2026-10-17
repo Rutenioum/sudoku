@@ -20,7 +20,6 @@ with this application without prior consent.
 package tunnel
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -40,18 +39,6 @@ const (
 type UoTDialer interface {
 	Dialer
 	DialUDPOverTCP() (net.Conn, error)
-}
-
-// appendUoTAddr appends the SOCKS5-style encoding of addr (host:port) to dst.
-func appendUoTAddr(dst []byte, addr string) ([]byte, error) {
-	if ap, err := netip.ParseAddrPort(addr); err == nil {
-		return appendUoTAddrPort(dst, ap), nil
-	}
-	var b bytes.Buffer
-	if err := protocol.WriteAddress(&b, addr); err != nil {
-		return dst, err
-	}
-	return append(dst, b.Bytes()...), nil
 }
 
 func appendUoTAddrPort(dst []byte, ap netip.AddrPort) []byte {
@@ -170,7 +157,7 @@ func (u *UoTWriter) enqueue(appendAddr func([]byte) ([]byte, error), payload []b
 
 // WriteDatagram queues a datagram for addr (host:port).
 func (u *UoTWriter) WriteDatagram(addr string, payload []byte) error {
-	return u.enqueue(func(b []byte) ([]byte, error) { return appendUoTAddr(b, addr) }, payload)
+	return u.enqueue(func(b []byte) ([]byte, error) { return protocol.AppendAddress(b, addr) }, payload)
 }
 
 func (u *UoTWriter) writeAddrPort(ap netip.AddrPort, payload []byte) error {
@@ -215,12 +202,12 @@ func parseUoTAddr(b []byte) (ap netip.AddrPort, host string, err error) {
 			}
 		case protocol.AddrTypeIPv6:
 			if len(b) >= 1+16+2 {
-				ip := netip.AddrFrom16([16]byte(b[1:17]))
+				ip := netip.AddrFrom16([16]byte(b[1:17])).Unmap()
 				return netip.AddrPortFrom(ip, binary.BigEndian.Uint16(b[17:19])), "", nil
 			}
 		}
 	}
-	host, _, _, err = protocol.ReadAddress(bytes.NewReader(b))
+	host, err = protocol.DecodeAddress(b)
 	return netip.AddrPort{}, host, err
 }
 
