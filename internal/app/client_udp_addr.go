@@ -21,6 +21,7 @@ package app
 
 import "net"
 
+// Seams so tests can fake the host's network interfaces.
 var networkInterfaces = net.Interfaces
 var interfaceAddrs = func(iface net.Interface) ([]net.Addr, error) { return iface.Addrs() }
 
@@ -34,6 +35,8 @@ func normalizeIP(ip net.IP) net.IP {
 	return ip.To16()
 }
 
+// ipFromNetAddr returns the canonical IP of addr, or nil when it has none.
+// The UDP-associate helpers below expect their IP arguments to come from here.
 func ipFromNetAddr(addr net.Addr) net.IP {
 	if addr == nil {
 		return nil
@@ -52,22 +55,15 @@ func ipFromNetAddr(addr net.Addr) net.IP {
 	}
 }
 
+// isIPv6Only reports whether the control connection runs over IPv6, preferring the local end.
 func isIPv6Only(localIP net.IP, remoteIP net.IP) bool {
-	localIP = normalizeIP(localIP)
-	remoteIP = normalizeIP(remoteIP)
 	if localIP != nil {
 		return localIP.To4() == nil
 	}
-	if remoteIP != nil {
-		return remoteIP.To4() == nil
-	}
-	return false
+	return remoteIP != nil && remoteIP.To4() == nil
 }
 
 func udpNetworkAndBindIP(localIP net.IP, remoteIP net.IP) (string, net.IP) {
-	localIP = normalizeIP(localIP)
-	remoteIP = normalizeIP(remoteIP)
-
 	// Best-effort family match with the TCP control peer.
 	if remoteIP != nil {
 		if remoteIP.To4() != nil {
@@ -83,79 +79,50 @@ func udpNetworkAndBindIP(localIP net.IP, remoteIP net.IP) (string, net.IP) {
 	return "udp", nil
 }
 
+func sameIPFamily(a, b net.IP) bool {
+	return (a.To4() != nil) == (b.To4() != nil)
+}
+
+// listenUDPAssociate binds the relay socket on bindIP when one is advertised, otherwise on a dual-stack
+// socket if its family suits the control peer, otherwise on a family-specific one.
 func listenUDPAssociate(localIP net.IP, remoteIP net.IP, bindIP net.IP) (*net.UDPConn, string, error) {
-	bindIP = normalizeIP(bindIP)
 	if bindIP != nil && !bindIP.IsUnspecified() {
 		udpNet := "udp6"
 		if bindIP.To4() != nil {
 			udpNet = "udp4"
 		}
-		c, err := net.ListenUDP(udpNet, &net.UDPAddr{IP: bindIP, Port: 0})
+		c, err := net.ListenUDP(udpNet, &net.UDPAddr{IP: bindIP})
 		return c, udpNet, err
 	}
 
-	// Prefer a dual-stack socket when possible (and safe), then fall back to a family-specific one.
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: nil, Port: 0})
-	if err == nil && udpConn != nil {
-		la, _ := udpConn.LocalAddr().(*net.UDPAddr)
-		laIP := net.IP(nil)
-		if la != nil {
-			laIP = normalizeIP(la.IP)
-		}
-		peerIP := normalizeIP(remoteIP)
-
-		// Avoid surprising family mismatch on platforms where "udp" may bind IPv6-only sockets by default.
-		if peerIP != nil && laIP != nil {
-			if peerIP.To4() != nil && laIP.To4() == nil {
-				_ = udpConn.Close()
-				udpConn = nil
-			}
-			if peerIP.To4() == nil && laIP.To4() != nil {
-				_ = udpConn.Close()
-				udpConn = nil
-			}
-		}
-
-		if udpConn != nil {
+	if udpConn, err := net.ListenUDP("udp", &net.UDPAddr{}); err == nil {
+		// Some platforms bind "udp" IPv6-only, which a peer of the other family cannot reach.
+		if remoteIP == nil || sameIPFamily(remoteIP, udpConn.LocalAddr().(*net.UDPAddr).IP) {
 			return udpConn, "udp", nil
 		}
+		_ = udpConn.Close()
 	}
 
 	udpNet, udpBindIP := udpNetworkAndBindIP(localIP, remoteIP)
-	c, err := net.ListenUDP(udpNet, &net.UDPAddr{IP: udpBindIP, Port: 0})
+	c, err := net.ListenUDP(udpNet, &net.UDPAddr{IP: udpBindIP})
 	return c, udpNet, err
 }
 
-func selectUDPAssociateReplyIP(localIP net.IP, remoteIP net.IP) net.IP {
-	localIP = normalizeIP(localIP)
-	remoteIP = normalizeIP(remoteIP)
-
-	if localIP == nil || localIP.IsUnspecified() {
+// selectUDPAssociateAdvertiseIP picks the BND.ADDR to advertise, or nil to tell the client to reuse
+// the TCP endpoint host. Loopback is never advertised (that would pin clients to 127.0.0.1), so it is
+// swapped for the first usable interface address.
+func selectUDPAssociateAdvertiseIP(localIP net.IP, remoteIP net.IP) net.IP {
+	switch {
+	case localIP == nil || localIP.IsUnspecified():
 		return nil
-	}
-	if localIP.IsLoopback() {
-		// Prefer 0.0.0.0/:: for loopback-bound control sessions so clients reuse
-		// the TCP endpoint host instead of being pinned to 127.0.0.1.
+	case localIP.IsLoopback():
+		return firstGlobalUnicastIPv4()
+	case !localIP.IsGlobalUnicast():
 		return nil
-	}
-	if !localIP.IsGlobalUnicast() {
-		return nil
-	}
-	if localIP.IsPrivate() && (remoteIP == nil || !remoteIP.IsPrivate()) {
+	case localIP.IsPrivate() && (remoteIP == nil || !remoteIP.IsPrivate()):
 		return nil
 	}
 	return localIP
-}
-
-func selectUDPAssociateAdvertiseIP(localIP net.IP, remoteIP net.IP) net.IP {
-	if ip := selectUDPAssociateReplyIP(localIP, remoteIP); ip != nil {
-		return ip
-	}
-	localIP = normalizeIP(localIP)
-	if localIP == nil || !localIP.IsLoopback() {
-		return nil
-	}
-	return firstGlobalUnicastIPv4()
 }
 
 func firstGlobalUnicastIPv4() net.IP {
@@ -164,13 +131,7 @@ func firstGlobalUnicastIPv4() net.IP {
 		return nil
 	}
 	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 {
-			continue
-		}
-		if iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		if iface.Flags&net.FlagPointToPoint != 0 {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&(net.FlagLoopback|net.FlagPointToPoint) != 0 {
 			continue
 		}
 		addrs, err := interfaceAddrs(iface)
@@ -179,24 +140,20 @@ func firstGlobalUnicastIPv4() net.IP {
 		}
 		for _, addr := range addrs {
 			ipNet, ok := addr.(*net.IPNet)
-			if !ok || ipNet == nil || ipNet.IP == nil {
+			if !ok {
 				continue
 			}
-			ip := normalizeIP(ipNet.IP)
-			if ip == nil || ip.To4() == nil || ip.IsLoopback() || ip.IsUnspecified() {
-				continue
+			if ip := ipNet.IP.To4(); ip != nil && ip.IsGlobalUnicast() {
+				return ip
 			}
-			if !ip.IsGlobalUnicast() {
-				continue
-			}
-			return ip
 		}
 	}
 	return nil
 }
 
+// initialUDPAssociateClientIP is the datagram source allowed before the first packet arrives.
+// Loopback and wildcard control peers (e.g. behind a port forward) are not pinned.
 func initialUDPAssociateClientIP(ip net.IP) net.IP {
-	ip = normalizeIP(ip)
 	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() {
 		return nil
 	}

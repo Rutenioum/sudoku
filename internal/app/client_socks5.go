@@ -93,9 +93,9 @@ func handleSocks5UDPAssociate(ctrl net.Conn, cfg *config.Config, routeMgrs *rout
 
 	localIP := ipFromNetAddr(ctrl.LocalAddr())
 	remoteIP := ipFromNetAddr(ctrl.RemoteAddr())
-	replyIP := selectUDPAssociateAdvertiseIP(localIP, remoteIP)
+	advertiseIP := selectUDPAssociateAdvertiseIP(localIP, remoteIP)
 
-	udpConn, udpNet, err := listenUDPAssociate(localIP, remoteIP, replyIP)
+	udpConn, udpNet, err := listenUDPAssociate(localIP, remoteIP, advertiseIP)
 	if err != nil {
 		writeSocks5Reply(ctrl, 0x01)
 		return
@@ -108,7 +108,7 @@ func handleSocks5UDPAssociate(ctrl net.Conn, cfg *config.Config, routeMgrs *rout
 		return
 	}
 
-	reply := buildUDPAssociateReply(replyIP, udpConn.LocalAddr().(*net.UDPAddr).Port, localIP, remoteIP)
+	reply := buildUDPAssociateReply(advertiseIP, udpConn.LocalAddr().(*net.UDPAddr).Port, localIP, remoteIP)
 	if err := connutil.WriteFull(ctrl, reply); err != nil {
 		_ = udpConn.Close()
 		_ = uotConn.Close()
