@@ -21,23 +21,28 @@ package app
 
 import (
 	"bufio"
+	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
-	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
-func handleHTTP(conn net.Conn, cfg *config.Config, _ *sudoku.Table, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
+func handleHTTP(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
 	defer conn.Close()
 
-	req, err := http.ReadRequest(bufio.NewReader(conn))
+	req, early, err := readProxyRequest(conn)
 	if err != nil {
 		return
+	}
+	if len(early) > 0 {
+		conn = &peekConn{Conn: conn, peeked: early}
 	}
 
 	host := ensureHostPort(req.Host, req.Method)
@@ -85,6 +90,26 @@ func handleHTTP(conn net.Conn, cfg *config.Config, _ *sudoku.Table, routeMgrs *r
 	connutil.PipeConn(conn, targetConn)
 }
 
+var httpReaders = sync.Pool{New: func() any { return bufio.NewReader(nil) }}
+
+// readProxyRequest parses the request head. For CONNECT it also returns the bytes the client sent behind the
+// head, which belong to the tunnel, and recycles the reader; other methods keep it because the body reads from it.
+func readProxyRequest(r io.Reader) (req *http.Request, early []byte, err error) {
+	br := httpReaders.Get().(*bufio.Reader)
+	br.Reset(r)
+	req, err = http.ReadRequest(br)
+	if err == nil && req.Method != http.MethodConnect {
+		return req, nil, nil
+	}
+	if n := br.Buffered(); err == nil && n > 0 {
+		pending, _ := br.Peek(n)
+		early = slices.Clone(pending)
+	}
+	br.Reset(nil)
+	httpReaders.Put(br)
+	return req, early, err
+}
+
 func defaultPortForMethod(method string) string {
 	if method == http.MethodConnect {
 		return "443"
@@ -103,17 +128,8 @@ func ensureHostPort(host string, method string) string {
 
 	port := defaultPortForMethod(method)
 
-	trimmed := host
-	if strings.HasPrefix(trimmed, "[") {
-		trimmed = strings.TrimPrefix(trimmed, "[")
-	}
-	if strings.HasSuffix(trimmed, "]") {
-		trimmed = strings.TrimSuffix(trimmed, "]")
-	}
+	trimmed := strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 	if ip := net.ParseIP(trimmed); ip != nil {
-		return net.JoinHostPort(ip.String(), port)
-	}
-	if ip := net.ParseIP(host); ip != nil {
 		return net.JoinHostPort(ip.String(), port)
 	}
 	return net.JoinHostPort(host, port)

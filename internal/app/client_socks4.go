@@ -20,50 +20,48 @@ with this application without prior consent.
 package app
 
 import (
+	"bufio"
 	"encoding/binary"
-	"fmt"
+	"errors"
 	"io"
 	"net"
+	"net/netip"
+	"slices"
+	"strconv"
+	"sync"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
-	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
-func handleClientSocks4(conn net.Conn, cfg *config.Config, _ *sudoku.Table, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
+// socks4ReadBufBytes bounds the NUL-terminated user id and domain the handshake will buffer.
+const socks4ReadBufBytes = 512
+
+var socks4Readers = sync.Pool{New: func() any { return bufio.NewReaderSize(nil, socks4ReadBufBytes) }}
+
+var errNotSocks4Connect = errors.New("not a SOCKS4 CONNECT request")
+
+func handleSocks4(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
 	defer conn.Close()
 
-	buf := make([]byte, 8)
-	if _, err := io.ReadFull(conn, buf); err != nil {
+	br := socks4Readers.Get().(*bufio.Reader)
+	br.Reset(conn)
+	destAddrStr, destIP, err := readSocks4Request(br)
+	// Bytes the client sent ahead of our reply belong to the tunnel, not to the handshake.
+	var early []byte
+	if n := br.Buffered(); err == nil && n > 0 {
+		pending, _ := br.Peek(n)
+		early = slices.Clone(pending)
+	}
+	br.Reset(nil)
+	socks4Readers.Put(br)
+	if err != nil {
 		return
 	}
-
-	if buf[0] != 0x04 || buf[1] != 0x01 { // only CONNECT
-		return
-	}
-
-	port := binary.BigEndian.Uint16(buf[2:4])
-	ipBytes := buf[4:8]
-
-	if _, err := readString(conn); err != nil {
-		return
-	}
-
-	var destAddrStr string
-	var destIP net.IP
-
-	// SOCKS4a: 0.0.0.x => domain string after userid.
-	if ipBytes[0] == 0 && ipBytes[1] == 0 && ipBytes[2] == 0 && ipBytes[3] != 0 {
-		domain, err := readString(conn)
-		if err != nil {
-			return
-		}
-		destAddrStr = fmt.Sprintf("%s:%d", domain, port)
-	} else {
-		destIP = net.IP(ipBytes)
-		destAddrStr = fmt.Sprintf("%s:%d", destIP.String(), port)
+	if len(early) > 0 {
+		conn = &peekConn{Conn: conn, peeked: early}
 	}
 
 	targetConn, _, success := dialTarget("TCP", conn.RemoteAddr(), destAddrStr, destIP, cfg, routeMgrs, dialer, resolver)
@@ -76,17 +74,29 @@ func handleClientSocks4(conn net.Conn, cfg *config.Config, _ *sudoku.Table, rout
 	connutil.PipeConn(conn, targetConn)
 }
 
-func readString(r io.Reader) (string, error) {
-	var buf []byte
-	var b [1]byte
-	for {
-		if _, err := r.Read(b[:]); err != nil {
-			return "", err
-		}
-		if b[0] == 0 {
-			break
-		}
-		buf = append(buf, b[0])
+// readSocks4Request parses a CONNECT request (SOCKS4 or 4a) and returns the target as host:port.
+func readSocks4Request(br *bufio.Reader) (destAddrStr string, destIP net.IP, err error) {
+	hdr := make([]byte, 8)
+	if _, err := io.ReadFull(br, hdr); err != nil {
+		return "", nil, err
 	}
-	return string(buf), nil
+	if hdr[0] != 0x04 || hdr[1] != 0x01 {
+		return "", nil, errNotSocks4Connect
+	}
+	port := strconv.Itoa(int(binary.BigEndian.Uint16(hdr[2:4])))
+	ip := hdr[4:8]
+
+	if _, err := br.ReadSlice(0); err != nil { // user id
+		return "", nil, err
+	}
+
+	// SOCKS4a: 0.0.0.x => domain string after the user id.
+	if ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] != 0 {
+		domain, err := br.ReadSlice(0)
+		if err != nil {
+			return "", nil, err
+		}
+		return string(domain[:len(domain)-1]) + ":" + port, nil, nil
+	}
+	return netip.AddrFrom4([4]byte(ip)).String() + ":" + port, net.IP(ip), nil
 }

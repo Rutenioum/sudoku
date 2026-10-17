@@ -26,16 +26,16 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/geodata"
-	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
-func newRuleManagerForTest(t *testing.T, payload string) *geodata.Manager {
+func newRuleManagerForTest(t testing.TB, payload string) *geodata.Manager {
 	t.Helper()
 	t.Setenv("SUDOKU_RULE_CACHE_DIR", t.TempDir())
 
@@ -95,173 +95,110 @@ func (m *MockDialer) Dial(destAddrStr string) (net.Conn, error) {
 	return NewMockConn(nil), nil
 }
 
-func TestDialTarget_PACUnmatchedHostProxiesWithoutLocalDNS(t *testing.T) {
-	geoMgr := newRuleManagerForTest(t, "payload:\n  - '1.2.3.0/24'\n")
-
-	oldDirectDial := directDial
-	oldResolveWithCache := resolveWithCache
-	t.Cleanup(func() {
-		directDial = oldDirectDial
-		resolveWithCache = oldResolveWithCache
-	})
-
-	directDial = func(network, addr string, timeout time.Duration) (net.Conn, error) {
-		t.Fatalf("unexpected direct dial: %s", addr)
-		return nil, nil
-	}
-	resolveWithCache = func(ctx context.Context, resolver *dnsutil.Resolver, addr string) (string, error) {
-		t.Fatalf("unexpected local resolve for unmatched PAC host: %s", addr)
-		return "", nil
-	}
-
-	cfg := &config.Config{ProxyMode: "pac"}
-	var proxyTarget string
-	dialer := &MockDialer{
-		DialFunc: func(destAddrStr string) (net.Conn, error) {
-			proxyTarget = destAddrStr
-			return NewMockConn(nil), nil
-		},
-	}
-
-	routeMgrs := &routeManagers{direct: geoMgr}
-	_, _, ok := dialTarget("TCP", nil, "foo.example:443", nil, cfg, routeMgrs, dialer, nil)
-	if !ok {
-		t.Fatalf("expected proxy dial success")
-	}
-	if proxyTarget != "foo.example:443" {
-		t.Fatalf("unexpected proxy target: %q", proxyTarget)
-	}
+// dialRecorder lists every outbound action dialTarget took.
+type dialRecorder struct {
+	direct, resolved, proxy []string
 }
 
-func TestDialTarget_PACDirectDomainStillResolvesForDirectDial(t *testing.T) {
-	geoMgr := newRuleManagerForTest(t, "payload:\n  - DOMAIN-SUFFIX,example.cn\n")
-
-	oldDirectDial := directDial
-	oldResolveWithCache := resolveWithCache
-	t.Cleanup(func() {
-		directDial = oldDirectDial
-		resolveWithCache = oldResolveWithCache
-	})
-
-	resolveWithCache = func(ctx context.Context, resolver *dnsutil.Resolver, addr string) (string, error) {
-		if addr != "foo.example.cn:443" {
-			t.Fatalf("unexpected resolve target: %s", addr)
-		}
-		return "1.2.3.4:443", nil
-	}
-
-	var dialed string
+// stubDialing replaces the direct dial and DNS hooks, resolving every name to resolveTo.
+func stubDialing(t *testing.T, resolveTo string) *dialRecorder {
+	t.Helper()
+	rec := &dialRecorder{}
+	oldDirectDial, oldResolveWithCache := directDial, resolveWithCache
+	t.Cleanup(func() { directDial, resolveWithCache = oldDirectDial, oldResolveWithCache })
 	directDial = func(network, addr string, timeout time.Duration) (net.Conn, error) {
-		dialed = addr
+		rec.direct = append(rec.direct, addr)
 		return NewMockConn(nil), nil
 	}
-
-	cfg := &config.Config{ProxyMode: "pac"}
-	dialer := &MockDialer{
-		DialFunc: func(destAddrStr string) (net.Conn, error) {
-			t.Fatalf("unexpected proxy dial: %s", destAddrStr)
-			return nil, nil
-		},
-	}
-
-	routeMgrs := &routeManagers{direct: geoMgr}
-	_, _, ok := dialTarget("TCP", nil, "foo.example.cn:443", nil, cfg, routeMgrs, dialer, nil)
-	if !ok {
-		t.Fatalf("expected direct dial success")
-	}
-	if dialed != "1.2.3.4:443" {
-		t.Fatalf("unexpected direct addr: %q", dialed)
-	}
-}
-
-func TestDialTarget_PACProxyRuleOverridesDirectRule(t *testing.T) {
-	directMgr := newRuleManagerForTest(t, "payload:\n  - DOMAIN-SUFFIX,example.cn\n")
-	proxyMgr := newRuleManagerForTest(t, "payload:\n  - DOMAIN-SUFFIX,video.example.cn\n")
-	cfg := &config.Config{ProxyMode: "pac"}
-
-	decision := decideRoute(cfg, &routeManagers{direct: directMgr}, "video.example.cn:443", nil)
-	if decision.action != routeActionDirect {
-		t.Fatalf("expected direct before proxy override, got %s", decision.action)
-	}
-
-	oldDirectDial := directDial
-	oldResolveWithCache := resolveWithCache
-	t.Cleanup(func() {
-		directDial = oldDirectDial
-		resolveWithCache = oldResolveWithCache
-	})
-
-	directDial = func(network, addr string, timeout time.Duration) (net.Conn, error) {
-		t.Fatalf("unexpected direct dial: %s", addr)
-		return nil, nil
-	}
 	resolveWithCache = func(ctx context.Context, resolver *dnsutil.Resolver, addr string) (string, error) {
-		t.Fatalf("unexpected local resolve for proxy override: %s", addr)
-		return "", nil
+		rec.resolved = append(rec.resolved, addr)
+		return resolveTo, nil
 	}
+	return rec
+}
 
-	var proxyTarget string
-	dialer := &MockDialer{
-		DialFunc: func(destAddrStr string) (net.Conn, error) {
-			proxyTarget = destAddrStr
-			return NewMockConn(nil), nil
+func TestDialTarget(t *testing.T) {
+	tests := []struct {
+		name                     string
+		mode                     string
+		directRules, proxyRules  string
+		rejectRules              string
+		target                   string
+		wantAction               routeAction
+		wantDialed               bool
+		wantDirect, wantResolved []string
+		wantProxy                []string
+	}{
+		{
+			name: "PAC unmatched host proxies without local DNS",
+			mode: "pac", directRules: "payload:\n  - '1.2.3.0/24'\n",
+			target: "foo.example:443", wantAction: routeActionProxy, wantDialed: true,
+			wantProxy: []string{"foo.example:443"},
+		},
+		{
+			name: "PAC direct domain is resolved locally for the direct dial",
+			mode: "pac", directRules: "payload:\n  - DOMAIN-SUFFIX,example.cn\n",
+			target: "foo.example.cn:443", wantAction: routeActionDirect, wantDialed: true,
+			wantResolved: []string{"foo.example.cn:443"}, wantDirect: []string{"1.2.3.4:443"},
+		},
+		{
+			name: "PAC proxy rule overrides direct rule",
+			mode: "pac", directRules: "payload:\n  - DOMAIN-SUFFIX,example.cn\n", proxyRules: "payload:\n  - DOMAIN-SUFFIX,video.example.cn\n",
+			target: "video.example.cn:443", wantAction: routeActionProxy, wantDialed: true,
+			wantProxy: []string{"video.example.cn:443"},
+		},
+		{
+			name: "reject skips every outbound dial",
+			mode: "global", rejectRules: "payload:\n  - DOMAIN-SUFFIX,ads.example\n",
+			target: "track.ads.example:443", wantAction: routeActionReject,
 		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := stubDialing(t, "1.2.3.4:443")
+			mgrs := &routeManagers{}
+			if tt.directRules != "" {
+				mgrs.direct = newRuleManagerForTest(t, tt.directRules)
+			}
+			if tt.proxyRules != "" {
+				mgrs.proxy = newRuleManagerForTest(t, tt.proxyRules)
+			}
+			if tt.rejectRules != "" {
+				mgrs.reject = newRuleManagerForTest(t, tt.rejectRules)
+			}
+			dialer := &MockDialer{DialFunc: func(destAddrStr string) (net.Conn, error) {
+				rec.proxy = append(rec.proxy, destAddrStr)
+				return NewMockConn(nil), nil
+			}}
 
-	routeMgrs := &routeManagers{direct: directMgr, proxy: proxyMgr}
-	_, decision, ok := dialTarget("TCP", nil, "video.example.cn:443", nil, cfg, routeMgrs, dialer, nil)
-	if !ok {
-		t.Fatalf("expected proxy dial success")
-	}
-	if decision.action != routeActionProxy {
-		t.Fatalf("unexpected action: %s", decision.action)
-	}
-	if proxyTarget != "video.example.cn:443" {
-		t.Fatalf("unexpected proxy target: %q", proxyTarget)
+			conn, decision, ok := dialTarget("TCP", nil, tt.target, nil, &config.Config{ProxyMode: tt.mode}, mgrs, dialer, nil)
+
+			if ok != tt.wantDialed || (conn != nil) != tt.wantDialed {
+				t.Fatalf("ok = %v, conn = %v, want dialed = %v", ok, conn, tt.wantDialed)
+			}
+			if decision.action != tt.wantAction {
+				t.Fatalf("action = %s, want %s", decision.action, tt.wantAction)
+			}
+			for _, c := range []struct {
+				what      string
+				got, want []string
+			}{{"direct dials", rec.direct, tt.wantDirect}, {"local resolves", rec.resolved, tt.wantResolved}, {"proxy dials", rec.proxy, tt.wantProxy}} {
+				if !slices.Equal(c.got, c.want) {
+					t.Errorf("%s = %q, want %q", c.what, c.got, c.want)
+				}
+			}
+		})
 	}
 }
 
-func TestDialTarget_RejectSkipsOutboundDial(t *testing.T) {
-	rejectMgr := newRuleManagerForTest(t, "payload:\n  - DOMAIN-SUFFIX,ads.example\n")
-
-	oldDirectDial := directDial
-	t.Cleanup(func() {
-		directDial = oldDirectDial
-	})
-	directDial = func(network, addr string, timeout time.Duration) (net.Conn, error) {
-		t.Fatalf("unexpected direct dial: %s", addr)
-		return nil, nil
-	}
-
-	cfg := &config.Config{ProxyMode: "global"}
-	dialer := &MockDialer{
-		DialFunc: func(destAddrStr string) (net.Conn, error) {
-			t.Fatalf("unexpected proxy dial: %s", destAddrStr)
-			return nil, nil
-		},
-	}
-
-	conn, decision, ok := dialTarget("TCP", nil, "track.ads.example:443", nil, cfg, &routeManagers{reject: rejectMgr}, dialer, nil)
-	if ok {
-		t.Fatalf("expected reject route")
-	}
-	if conn != nil {
-		t.Fatalf("reject should not return a connection")
-	}
-	if decision.action != routeActionReject {
-		t.Fatalf("unexpected action: %s", decision.action)
-	}
-}
-
-func TestHandleMixedConn_HTTPRejectReturnsForbidden(t *testing.T) {
+func TestServeMixed_HTTPRejectReturnsForbidden(t *testing.T) {
 	rejectMgr := newRuleManagerForTest(t, "payload:\n  - DOMAIN-SUFFIX,ads.example\n")
 
 	reqStr := "CONNECT track.ads.example:443 HTTP/1.1\r\nHost: track.ads.example:443\r\n\r\n"
 	conn := NewMockConn([]byte(reqStr))
 	cfg := &config.Config{ProxyMode: "global"}
-	table := sudoku.NewTable("key", "prefer_entropy")
 
-	handleMixedConn(conn, cfg, table, &routeManagers{reject: rejectMgr}, &MockDialer{
+	serveMixed(conn, cfg, &routeManagers{reject: rejectMgr}, &MockDialer{
 		DialFunc: func(destAddrStr string) (net.Conn, error) {
 			t.Fatalf("unexpected proxy dial: %s", destAddrStr)
 			return nil, nil
@@ -273,7 +210,7 @@ func TestHandleMixedConn_HTTPRejectReturnsForbidden(t *testing.T) {
 	}
 }
 
-func TestHandleMixedConn_SOCKS5RejectReturnsRulesetDeny(t *testing.T) {
+func TestServeMixed_SOCKS5RejectReturnsRulesetDeny(t *testing.T) {
 	rejectMgr := newRuleManagerForTest(t, "payload:\n  - DOMAIN-SUFFIX,ads.example\n")
 
 	input := []byte{
@@ -284,9 +221,8 @@ func TestHandleMixedConn_SOCKS5RejectReturnsRulesetDeny(t *testing.T) {
 	}
 	conn := NewMockConn(input)
 	cfg := &config.Config{ProxyMode: "global"}
-	table := sudoku.NewTable("key", "prefer_entropy")
 
-	handleMixedConn(conn, cfg, table, &routeManagers{reject: rejectMgr}, &MockDialer{
+	serveMixed(conn, cfg, &routeManagers{reject: rejectMgr}, &MockDialer{
 		DialFunc: func(destAddrStr string) (net.Conn, error) {
 			t.Fatalf("unexpected proxy dial: %s", destAddrStr)
 			return nil, nil
@@ -305,7 +241,7 @@ func TestHandleMixedConn_SOCKS5RejectReturnsRulesetDeny(t *testing.T) {
 	}
 }
 
-func TestHandleMixedConn_SOCKS4(t *testing.T) {
+func TestServeMixed_SOCKS4(t *testing.T) {
 	// Construct SOCKS4 Connect Request
 	// VN(4) | CD(1) | PORT(80) | IP(1.2.3.4) | USERID("user") | NULL
 	buf := new(bytes.Buffer)
@@ -318,7 +254,6 @@ func TestHandleMixedConn_SOCKS4(t *testing.T) {
 
 	conn := NewMockConn(buf.Bytes())
 	cfg := &config.Config{ProxyMode: "global"}
-	table := sudoku.NewTable("key", "prefer_entropy")
 
 	// Mock Dialer to capture target
 	var target string
@@ -329,7 +264,7 @@ func TestHandleMixedConn_SOCKS4(t *testing.T) {
 		},
 	}
 
-	handleMixedConn(conn, cfg, table, nil, dialer, nil)
+	serveMixed(conn, cfg, nil, dialer, nil)
 
 	// Verify Target
 	expectedTarget := "1.2.3.4:80"
@@ -345,7 +280,7 @@ func TestHandleMixedConn_SOCKS4(t *testing.T) {
 	}
 }
 
-func TestHandleMixedConn_SOCKS5(t *testing.T) {
+func TestServeMixed_SOCKS5(t *testing.T) {
 	// 1. Handshake: VER(5) | NMETHODS(1) | METHOD(0)
 	// 2. Request: VER(5) | CMD(1) | RSV(0) | ATYP(1) | IP(1.2.3.4) | PORT(80)
 	input := []byte{
@@ -354,7 +289,6 @@ func TestHandleMixedConn_SOCKS5(t *testing.T) {
 	}
 	conn := NewMockConn(input)
 	cfg := &config.Config{ProxyMode: "global"}
-	table := sudoku.NewTable("key", "prefer_entropy")
 
 	var target string
 	dialer := &MockDialer{
@@ -364,7 +298,7 @@ func TestHandleMixedConn_SOCKS5(t *testing.T) {
 		},
 	}
 
-	handleMixedConn(conn, cfg, table, nil, dialer, nil)
+	serveMixed(conn, cfg, nil, dialer, nil)
 
 	expectedTarget := "1.2.3.4:80"
 	if target != expectedTarget {
@@ -372,11 +306,10 @@ func TestHandleMixedConn_SOCKS5(t *testing.T) {
 	}
 }
 
-func TestHandleMixedConn_HTTP(t *testing.T) {
+func TestServeMixed_HTTP(t *testing.T) {
 	reqStr := "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"
 	conn := NewMockConn([]byte(reqStr))
 	cfg := &config.Config{ProxyMode: "global"}
-	table := sudoku.NewTable("key", "prefer_entropy")
 
 	var target string
 	dialer := &MockDialer{
@@ -386,7 +319,7 @@ func TestHandleMixedConn_HTTP(t *testing.T) {
 		},
 	}
 
-	handleMixedConn(conn, cfg, table, nil, dialer, nil)
+	serveMixed(conn, cfg, nil, dialer, nil)
 
 	expectedTarget := "example.com:443"
 	if target != expectedTarget {
@@ -394,11 +327,10 @@ func TestHandleMixedConn_HTTP(t *testing.T) {
 	}
 }
 
-func TestHandleMixedConn_HTTPIPv6HostNoPort(t *testing.T) {
+func TestServeMixed_HTTPIPv6HostNoPort(t *testing.T) {
 	reqStr := "CONNECT [2001:db8::1] HTTP/1.1\r\nHost: [2001:db8::1]\r\n\r\n"
 	conn := NewMockConn([]byte(reqStr))
 	cfg := &config.Config{ProxyMode: "global"}
-	table := sudoku.NewTable("key", "prefer_entropy")
 
 	var target string
 	dialer := &MockDialer{
@@ -408,113 +340,10 @@ func TestHandleMixedConn_HTTPIPv6HostNoPort(t *testing.T) {
 		},
 	}
 
-	handleMixedConn(conn, cfg, table, nil, dialer, nil)
+	serveMixed(conn, cfg, nil, dialer, nil)
 
 	expectedTarget := "[2001:db8::1]:443"
 	if target != expectedTarget {
 		t.Errorf("HTTP IPv6 target mismatch: got %q, want %q", target, expectedTarget)
-	}
-}
-
-func TestSelectUDPAssociateReplyIP_LoopbackPolicy(t *testing.T) {
-	tests := []struct {
-		name     string
-		localIP  net.IP
-		remoteIP net.IP
-		want     string
-	}{
-		{
-			name:     "drops loopback for loopback peers",
-			localIP:  net.ParseIP("127.0.0.1"),
-			remoteIP: net.ParseIP("127.0.0.1"),
-			want:     "",
-		},
-		{
-			name:     "drops loopback for non-loopback peers",
-			localIP:  net.ParseIP("127.0.0.1"),
-			remoteIP: net.ParseIP("172.19.0.2"),
-			want:     "",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := selectUDPAssociateReplyIP(tc.localIP, tc.remoteIP)
-			if tc.want == "" {
-				if got != nil {
-					t.Fatalf("expected nil reply ip, got %v", got)
-				}
-				return
-			}
-			if got == nil || got.String() != tc.want {
-				t.Fatalf("unexpected reply ip: got %v want %s", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestInitialUDPAssociateClientIP(t *testing.T) {
-	tests := []struct {
-		name string
-		ip   net.IP
-		want string
-	}{
-		{name: "nil stays nil", ip: nil, want: ""},
-		{name: "loopback becomes nil", ip: net.ParseIP("127.0.0.1"), want: ""},
-		{name: "private ipv4 is kept", ip: net.ParseIP("172.19.0.2"), want: "172.19.0.2"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := initialUDPAssociateClientIP(tc.ip)
-			if tc.want == "" {
-				if got != nil {
-					t.Fatalf("expected nil, got %v", got)
-				}
-				return
-			}
-			if got == nil || got.String() != tc.want {
-				t.Fatalf("unexpected client ip: got %v want %s", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestSelectUDPAssociateAdvertiseIP_UsesNonLoopbackFallback(t *testing.T) {
-	oldNetworkInterfaces := networkInterfaces
-	oldInterfaceAddrs := interfaceAddrs
-	networkInterfaces = func() ([]net.Interface, error) {
-		return []net.Interface{
-			{Index: 1, Flags: net.FlagUp | net.FlagLoopback},
-			{Index: 2, Flags: net.FlagUp | net.FlagPointToPoint},
-			{Index: 3, Flags: net.FlagUp | net.FlagBroadcast},
-		}, nil
-	}
-	interfaceAddrs = func(iface net.Interface) ([]net.Addr, error) {
-		switch iface.Index {
-		case 1:
-			return []net.Addr{
-				&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)},
-			}, nil
-		case 2:
-			return []net.Addr{
-				&net.IPNet{IP: net.ParseIP("172.19.0.2"), Mask: net.CIDRMask(16, 32)},
-			}, nil
-		case 3:
-			return []net.Addr{
-				&net.IPNet{IP: net.ParseIP("10.0.0.148"), Mask: net.CIDRMask(24, 32)},
-			}, nil
-		default:
-			return nil, nil
-		}
-	}
-	t.Cleanup(func() {
-		networkInterfaces = oldNetworkInterfaces
-		interfaceAddrs = oldInterfaceAddrs
-	})
-
-	got := selectUDPAssociateAdvertiseIP(net.ParseIP("127.0.0.1"), net.ParseIP("127.0.0.1"))
-	if got == nil || got.String() != "10.0.0.148" {
-		t.Fatalf("unexpected advertise ip: got %v want 10.0.0.148", got)
 	}
 }

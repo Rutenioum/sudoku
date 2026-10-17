@@ -161,9 +161,6 @@ func startMuxWarmers(runtimes []*clientRuntime) func() {
 }
 
 func clientNodeID(cfg *config.Config) string {
-	if cfg == nil {
-		return "client-node"
-	}
 	serverAddr := strings.TrimSpace(cfg.ServerAddress)
 	if serverAddr == "" {
 		serverAddr = "unknown-server"

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"cmp"
 	"fmt"
 	"os"
 	"strconv"
@@ -138,27 +139,12 @@ func finalizeWizard(in wizardInput) (*WizardResult, error) {
 		in.MixPort = 1080
 	}
 
-	aead := strings.ToLower(strings.TrimSpace(in.AEAD))
-	if aead == "" {
-		aead = "chacha20-poly1305"
-	}
+	// Case, blanks and unknown enum values are normalized by Config.Finalize below.
+	aead := cmp.Or(strings.TrimSpace(in.AEAD), "chacha20-poly1305")
 	asciiMode := resolveASCII(in.ASCIIMode)
-	suspiciousAction := strings.ToLower(strings.TrimSpace(in.SuspiciousAction))
-	if suspiciousAction == "" {
-		suspiciousAction = "fallback"
-	}
 
-	paddingMin := in.PaddingMin
-	paddingMax := in.PaddingMax
-	if paddingMin < 0 {
-		paddingMin = 0
-	}
-	if paddingMax < 0 {
-		paddingMax = 0
-	}
-	if paddingMax < paddingMin {
-		paddingMax = paddingMin
-	}
+	paddingMin := max(in.PaddingMin, 0)
+	paddingMax := max(in.PaddingMax, paddingMin)
 
 	key := strings.TrimSpace(in.Key)
 	if key == "" {
@@ -170,38 +156,27 @@ func finalizeWizard(in wizardInput) (*WizardResult, error) {
 		logx.Infof("Setup", "Generated shared key: %s", key)
 	}
 
-	httpMaskMode := strings.ToLower(strings.TrimSpace(in.HTTPMaskMode))
-	if httpMaskMode == "" {
-		httpMaskMode = "legacy"
-	}
-	httpMaskMux := strings.ToLower(strings.TrimSpace(in.HTTPMaskMultiplex))
-	if httpMaskMux == "" {
-		httpMaskMux = "off"
-	}
-	customTable := strings.TrimSpace(in.CustomTable)
-	httpMaskHost := strings.TrimSpace(in.HTTPMaskHost)
-	httpMaskPathRoot := strings.TrimSpace(in.HTTPMaskPathRoot)
 	httpMaskCfg := config.HTTPMaskConfig{
 		Disable:   in.DisableHTTPMask,
-		Mode:      httpMaskMode,
+		Mode:      in.HTTPMaskMode,
 		TLS:       in.HTTPMaskTLS,
-		Host:      httpMaskHost,
-		PathRoot:  httpMaskPathRoot,
-		Multiplex: httpMaskMux,
+		Host:      in.HTTPMaskHost,
+		PathRoot:  in.HTTPMaskPathRoot,
+		Multiplex: in.HTTPMaskMultiplex,
 	}
 
 	serverCfg := &config.Config{
 		Mode:               "server",
 		Transport:          "tcp",
 		LocalPort:          in.ServerPort,
-		FallbackAddr:       strings.TrimSpace(in.FallbackAddr),
+		FallbackAddr:       in.FallbackAddr,
 		Key:                key,
 		AEAD:               aead,
-		SuspiciousAction:   suspiciousAction,
+		SuspiciousAction:   in.SuspiciousAction,
 		PaddingMin:         paddingMin,
 		PaddingMax:         paddingMax,
 		ASCII:              asciiMode,
-		CustomTable:        customTable,
+		CustomTable:        in.CustomTable,
 		EnablePureDownlink: in.EnablePureDown,
 		HTTPMask:           httpMaskCfg,
 	}
@@ -216,7 +191,7 @@ func finalizeWizard(in wizardInput) (*WizardResult, error) {
 		PaddingMin:         paddingMin,
 		PaddingMax:         paddingMax,
 		ASCII:              asciiMode,
-		CustomTable:        customTable,
+		CustomTable:        in.CustomTable,
 		ProxyMode:          "pac",
 		RuleURLs:           config.DefaultPACRuleURLs(),
 		EnablePureDownlink: in.EnablePureDown,

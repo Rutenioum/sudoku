@@ -21,14 +21,10 @@ package app
 
 import (
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
@@ -39,33 +35,21 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
-type PeekConn struct {
+// peekConn replays bytes consumed while sniffing the protocol before reading from the wire.
+type peekConn struct {
 	net.Conn
 	peeked []byte
 }
 
-func (c *PeekConn) CloseWrite() error {
-	if c == nil {
-		return nil
-	}
-	return connutil.TryCloseWrite(c.Conn)
-}
+func (c *peekConn) CloseWrite() error { return connutil.TryCloseWrite(c.Conn) }
 
-func (c *PeekConn) CloseRead() error {
-	if c == nil {
-		return nil
-	}
-	return connutil.TryCloseRead(c.Conn)
-}
+func (c *peekConn) CloseRead() error { return connutil.TryCloseRead(c.Conn) }
 
-func (c *PeekConn) Read(p []byte) (n int, err error) {
+func (c *peekConn) Read(p []byte) (int, error) {
 	if len(c.peeked) > 0 {
-		n = copy(p, c.peeked)
+		n := copy(p, c.peeked)
 		c.peeked = c.peeked[n:]
 		return n, nil
-	}
-	if c.Conn == nil {
-		return 0, io.EOF
 	}
 	return c.Conn.Read(p)
 }
@@ -132,53 +116,26 @@ func RunClientPool(configs []*config.Config, tableSets [][]*sudoku.Table) {
 	logx.Infof("Client", "Client (Mixed) on :%d -> %s | Mode: %s | Rules: %d",
 		primary.Config.LocalPort, strings.Join(nodeLabels, ", "), primary.Config.ProxyMode, len(primary.Config.RuleURLs))
 
-	// Graceful shutdown on SIGINT / SIGTERM.
-	sigCh := make(chan os.Signal, 1)
-	stopCh := make(chan struct{})
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		logx.Infof("Client", "Shutting down...")
-		close(stopCh)
-		_ = l.Close()
-	}()
-
-	var primaryTable *sudoku.Table
-	if len(primary.Tables) > 0 {
-		primaryTable = primary.Tables[0]
-	}
-	for {
-		c, err := l.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			select {
-			case <-stopCh:
-				return
-			default:
-				continue
-			}
-		}
-		go handleMixedConn(c, primary.Config, primaryTable, routeMgrs, dialer, resolver)
-	}
+	serveUntilShutdown("Client", l, func(c net.Conn) {
+		serveMixed(c, primary.Config, routeMgrs, dialer, resolver)
+	})
 }
 
-func handleMixedConn(c net.Conn, cfg *config.Config, table *sudoku.Table, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
+func serveMixed(c net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
 	buf := make([]byte, 1)
 	if _, err := io.ReadFull(c, buf); err != nil {
 		c.Close()
 		return
 	}
 
-	pConn := &PeekConn{Conn: c, peeked: buf}
+	pConn := &peekConn{Conn: c, peeked: buf}
 
 	switch buf[0] {
 	case 0x05:
-		handleClientSocks5(pConn, cfg, table, routeMgrs, dialer, resolver)
+		handleSocks5(pConn, cfg, routeMgrs, dialer, resolver)
 	case 0x04:
-		handleClientSocks4(pConn, cfg, table, routeMgrs, dialer, resolver)
+		handleSocks4(pConn, cfg, routeMgrs, dialer, resolver)
 	default:
-		handleHTTP(pConn, cfg, table, routeMgrs, dialer, resolver)
+		handleHTTP(pConn, cfg, routeMgrs, dialer, resolver)
 	}
 }

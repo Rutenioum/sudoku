@@ -38,17 +38,29 @@ var resolveWithCache = func(ctx context.Context, resolver *dnsutil.Resolver, add
 	return dnsutil.ResolveWithCache(ctx, addr)
 }
 
-type routeDecision struct {
-	action     string
-	match      string
-	directAddr string
-}
+type routeAction uint8
 
 const (
-	routeActionProxy  = "PROXY"
-	routeActionDirect = "DIRECT"
-	routeActionReject = "REJECT"
+	routeActionProxy routeAction = iota
+	routeActionDirect
+	routeActionReject
 )
+
+func (a routeAction) String() string {
+	switch a {
+	case routeActionDirect:
+		return "DIRECT"
+	case routeActionReject:
+		return "REJECT"
+	default:
+		return "PROXY"
+	}
+}
+
+type routeDecision struct {
+	action routeAction
+	match  string
+}
 
 type routeManagers struct {
 	direct *geodata.Manager
@@ -81,72 +93,64 @@ func (d routeDecision) shouldProxy() bool {
 	return d.action == routeActionProxy
 }
 
-func (m *routeManagers) managerForAction(action string) *geodata.Manager {
+// match reports the decision for action when its rule set claims the destination.
+// Direct rules also cover local networks; proxy and reject rules do not.
+func (m *routeManagers) match(action routeAction, destAddr string, destIP net.IP) (routeDecision, bool) {
 	if m == nil {
-		return nil
+		return routeDecision{}, false
 	}
+	var (
+		hit  bool
+		rule geodata.Match
+	)
 	switch action {
 	case routeActionDirect:
-		return m.direct
+		if m.direct != nil {
+			hit, rule = m.direct.MatchCN(destAddr, destIP)
+		}
 	case routeActionProxy:
-		return m.proxy
+		if m.proxy != nil {
+			hit, rule = m.proxy.MatchRule(destAddr, destIP)
+		}
 	case routeActionReject:
-		return m.reject
-	default:
-		return nil
+		if m.reject != nil {
+			hit, rule = m.reject.MatchRule(destAddr, destIP)
+		}
 	}
+	if !hit {
+		return routeDecision{}, false
+	}
+	return routeDecision{action: action, match: action.String() + "/" + rule.String()}, true
 }
 
 func decideRoute(cfg *config.Config, mgrs *routeManagers, destAddr string, destIP net.IP) routeDecision {
-	decision := routeDecision{action: routeActionProxy, match: "MODE(global)", directAddr: destAddr}
 	if cfg == nil {
-		decision.match = "CFG(nil)"
-		return decision
+		return routeDecision{action: routeActionProxy, match: "CFG(nil)"}
 	}
 
-	if matched, match, _ := matchRuleManager(mgrs, routeActionReject, destAddr, destIP); matched {
-		return routeDecision{action: routeActionReject, match: match, directAddr: destAddr}
+	if d, ok := mgrs.match(routeActionReject, destAddr, destIP); ok {
+		return d
 	}
-	if matched, match, _ := matchRuleManager(mgrs, routeActionProxy, destAddr, destIP); matched {
-		return routeDecision{action: routeActionProxy, match: match, directAddr: destAddr}
+	if d, ok := mgrs.match(routeActionProxy, destAddr, destIP); ok {
+		return d
 	}
 
 	switch cfg.ProxyMode {
 	case "direct":
-		return routeDecision{action: routeActionDirect, match: "MODE(direct)", directAddr: destAddr}
+		return routeDecision{action: routeActionDirect, match: "MODE(direct)"}
 	case "global":
-		return routeDecision{action: routeActionProxy, match: "MODE(global)", directAddr: destAddr}
+		return routeDecision{action: routeActionProxy, match: "MODE(global)"}
 	case "pac":
 		if mgrs == nil || mgrs.direct == nil {
-			decision.match = "PAC(no-rules)"
-			return decision
+			return routeDecision{action: routeActionProxy, match: "PAC(no-rules)"}
 		}
-
-		if matched, match, directAddr := matchRuleManager(mgrs, routeActionDirect, destAddr, destIP); matched {
-			return routeDecision{action: routeActionDirect, match: match, directAddr: directAddr}
+		if d, ok := mgrs.match(routeActionDirect, destAddr, destIP); ok {
+			return d
 		}
-		decision.match = "PAC/NONE"
-		return decision
+		return routeDecision{action: routeActionProxy, match: "PAC/NONE"}
 	default:
-		decision.match = "MODE(unknown)"
-		return decision
+		return routeDecision{action: routeActionProxy, match: "MODE(unknown)"}
 	}
-}
-
-func matchRuleManager(mgrs *routeManagers, action string, destAddr string, destIP net.IP) (bool, string, string) {
-	mgr := mgrs.managerForAction(action)
-	if mgr == nil {
-		return false, "", ""
-	}
-
-	ok, m := mgr.MatchCN(destAddr, destIP)
-	if action != routeActionDirect {
-		ok, m = mgr.MatchRule(destAddr, destIP)
-	}
-	if ok {
-		return true, action + "/" + m.String(), destAddr
-	}
-	return false, "", ""
 }
 
 func logRoute(network string, src net.Addr, destAddr string, decision routeDecision) {
@@ -154,12 +158,13 @@ func logRoute(network string, src net.Addr, destAddr string, decision routeDecis
 	if src != nil {
 		srcStr = src.String()
 	}
-	actionText := logx.Bold(logx.Magenta(decision.action))
+	name := decision.action.String()
+	actionText := logx.Bold(logx.Magenta(name))
 	switch decision.action {
 	case routeActionDirect:
-		actionText = logx.Bold(logx.Green(decision.action))
+		actionText = logx.Bold(logx.Green(name))
 	case routeActionReject:
-		actionText = logx.Bold(logx.Red(decision.action))
+		actionText = logx.Bold(logx.Red(name))
 	}
 	logx.Infof(strings.ToUpper(strings.TrimSpace(network)), "%s --> %s match %s using %s", srcStr, destAddr, logx.Yellow(decision.match), actionText)
 }
