@@ -21,6 +21,7 @@ package tests
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -86,6 +87,37 @@ func newTestClientConfig(port int, serverAddr, clientKey string) *config.Config 
 			Disable: true,
 		},
 	}
+}
+
+// startTarget serves handle for every connection to a loopback listener until the test ends and
+// returns the listener's address. It does not wait for handlers, because the in-process tunnel
+// endpoints of these tests keep their connections open after the test body returns.
+func startTarget(t testing.TB, handle func(net.Conn)) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen test target: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				handle(conn)
+			}()
+		}
+	}()
+	return listener.Addr().String()
+}
+
+func startEchoTarget(t testing.TB) string {
+	t.Helper()
+	return startTarget(t, func(c net.Conn) { _, _ = io.Copy(c, c) })
 }
 
 func localServerAddr(port int) string {

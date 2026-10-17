@@ -1,4 +1,4 @@
-package main
+package tests
 
 import (
 	"bytes"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
+	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 )
 
 // TestWAN200msLossyConcurrentUploadMuxStability exercises the exact failure
@@ -32,7 +33,7 @@ func TestWAN200msLossyConcurrentUploadMuxStability(t *testing.T) {
 		retransmitWait: 200 * time.Millisecond,
 	})
 
-	echoAddr := startWANTarget(t, func(conn net.Conn) {
+	echoAddr := startTarget(t, func(conn net.Conn) {
 		_, _ = io.Copy(conn, conn)
 	})
 
@@ -90,7 +91,7 @@ func TestWAN200msLossyConcurrentUploadMuxStability(t *testing.T) {
 			for time.Now().Before(deadline) {
 				start := time.Now()
 				_ = conn.SetWriteDeadline(time.Now().Add(stallThreshold))
-				if err := writeFull(conn, payload); err != nil {
+				if err := connutil.WriteFull(conn, payload); err != nil {
 					errCh <- fmt.Errorf("worker %d write: %w", idx, err)
 					return
 				}

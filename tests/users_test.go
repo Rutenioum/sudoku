@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
-	"net"
 	"testing"
 	"time"
 
@@ -34,30 +32,7 @@ func echoThroughProxy(t *testing.T, mask config.HTTPMaskConfig, serverPort, echo
 	cfg.HTTPMask = mask
 	startSudokuClient(t, cfg)
 
-	conn, err := net.Dial("tcp", localServerAddr(ports[0]))
-	if err != nil {
-		return 0, err
-	}
-	defer conn.Close()
-	target := fmt.Sprintf("127.0.0.1:%d", echoPort)
-	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	head := make([]byte, len("HTTP/1.1 200 Connection Established\r\n\r\n"))
-	if _, err := io.ReadFull(conn, head); err != nil {
-		return 0, err
-	}
-
-	start := time.Now()
-	go func() { _, _ = conn.Write(payload) }()
-	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-	got := make([]byte, len(payload))
-	if _, err := io.ReadFull(conn, got); err != nil {
-		return time.Since(start), err
-	}
-	if !bytes.Equal(got, payload) {
-		return time.Since(start), fmt.Errorf("echo mismatch")
-	}
-	return time.Since(start), nil
+	return proxyEcho(localServerAddr(ports[0]), fmt.Sprintf("127.0.0.1:%d", echoPort), payload)
 }
 
 func TestUsersWhitelist(t *testing.T) {

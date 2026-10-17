@@ -36,6 +36,7 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/internal/app"
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 	"github.com/SUDOKU-ASCII/sudoku/internal/protocol"
+	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
@@ -257,22 +258,6 @@ type closeReader interface {
 	CloseRead() error
 }
 
-func writeFullConn(conn net.Conn, data []byte) error {
-	for len(data) > 0 {
-		n, err := conn.Write(data)
-		if n > 0 {
-			data = data[n:]
-		}
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-	}
-	return nil
-}
-
 func copyWithCapture(dst, src net.Conn, ch chan []byte) error {
 	buf := make([]byte, 32*1024)
 	for {
@@ -286,7 +271,7 @@ func copyWithCapture(dst, src net.Conn, ch chan []byte) error {
 				default:
 				}
 			}
-			if writeErr := writeFullConn(dst, buf[:n]); writeErr != nil {
+			if writeErr := connutil.WriteFull(dst, buf[:n]); writeErr != nil {
 				return writeErr
 			}
 		}
@@ -372,7 +357,7 @@ func performUDPAssociate(t *testing.T, serverAddr string, dialer *net.Dialer) (n
 	}
 
 	_ = ctrl.SetWriteDeadline(time.Now().Add(3 * time.Second))
-	if err := writeFullConn(ctrl, []byte{0x05, 0x01, 0x00}); err != nil {
+	if err := connutil.WriteFull(ctrl, []byte{0x05, 0x01, 0x00}); err != nil {
 		t.Fatalf("Failed to write socks greeting: %v", err)
 	}
 	_ = ctrl.SetWriteDeadline(time.Time{})
@@ -388,7 +373,7 @@ func performUDPAssociate(t *testing.T, serverAddr string, dialer *net.Dialer) (n
 
 	req := []byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0}
 	_ = ctrl.SetWriteDeadline(time.Now().Add(3 * time.Second))
-	if err := writeFullConn(ctrl, req); err != nil {
+	if err := connutil.WriteFull(ctrl, req); err != nil {
 		t.Fatalf("Failed to write UDP associate: %v", err)
 	}
 	_ = ctrl.SetWriteDeadline(time.Time{})
@@ -504,7 +489,7 @@ func sendHTTPConnect(t *testing.T, conn net.Conn, target string) {
 	t.Helper()
 	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
 	_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-	if err := writeFullConn(conn, []byte(req)); err != nil {
+	if err := connutil.WriteFull(conn, []byte(req)); err != nil {
 		t.Fatalf("proxy handshake write failed: %v", err)
 	}
 	_ = conn.SetWriteDeadline(time.Time{})
@@ -582,7 +567,7 @@ func runTCPTransfer(t *testing.T, asciiMode string, pureDownlink bool, key strin
 	sendHTTPConnect(t, conn, target)
 
 	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err := writeFullConn(conn, payload); err != nil {
+	if err := connutil.WriteFull(conn, payload); err != nil {
 		t.Fatalf("write payload failed: %v", err)
 	}
 	_ = conn.SetWriteDeadline(time.Time{})
@@ -1039,7 +1024,7 @@ func TestConcurrentPackedSessions(t *testing.T) {
 			sendHTTPConnect(t, conn, target)
 			msg := []byte(fmt.Sprintf("hello-%d-%d", id, time.Now().UnixNano()))
 			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if err := writeFullConn(conn, msg); err != nil {
+			if err := connutil.WriteFull(conn, msg); err != nil {
 				t.Errorf("write %d failed: %v", id, err)
 				return
 			}
@@ -1100,7 +1085,7 @@ func TestEd25519KeyInterop(t *testing.T) {
 	sendHTTPConnect(t, conn, fmt.Sprintf("127.0.0.1:%d", echoPort))
 	payload := []byte("ed25519-key-test")
 	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err := writeFullConn(conn, payload); err != nil {
+	if err := connutil.WriteFull(conn, payload); err != nil {
 		t.Fatalf("write failed: %v", err)
 	}
 	_ = conn.SetWriteDeadline(time.Time{})

@@ -11,15 +11,7 @@ import (
 )
 
 func TestHTTPMaskProxy_AutoPathRoot(t *testing.T) {
-	runHTTPMaskAutoPathRootProxyCase(t, "httpmask-auto-pathroot-ok")
-}
-
-func TestMatrixSmoke_HTTPMaskAutoPathRoot(t *testing.T) {
-	runHTTPMaskAutoPathRootProxyCase(t, "matrix-smoke-app-httpmask-ok")
-}
-
-func runHTTPMaskAutoPathRootProxyCase(t *testing.T, wantBody string) {
-	t.Helper()
+	const wantBody = "httpmask-auto-pathroot-ok"
 
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

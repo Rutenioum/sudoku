@@ -22,7 +22,6 @@ package tests
 import (
 	"context"
 	"io"
-	"net"
 	"testing"
 	"time"
 
@@ -32,25 +31,7 @@ import (
 )
 
 func TestReverseProxy_TCPOverWebSocket_Subpath(t *testing.T) {
-	originLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen origin: %v", err)
-	}
-	defer originLn.Close()
-
-	originAddr := originLn.Addr().String()
-	go func() {
-		for {
-			c, err := originLn.Accept()
-			if err != nil {
-				return
-			}
-			go func(conn net.Conn) {
-				defer conn.Close()
-				_, _ = io.Copy(conn, conn)
-			}(c)
-		}
-	}()
+	originAddr := startEchoTarget(t)
 
 	serverKey, clientKey := newTestKeys(t)
 

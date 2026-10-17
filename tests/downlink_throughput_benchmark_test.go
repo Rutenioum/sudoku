@@ -459,7 +459,7 @@ func writeBenchmarkPayload(conn net.Conn, bytesPerConn int64) (int64, error) {
 		if remaining := bytesPerConn - written; remaining < int64(n) {
 			n = int(remaining)
 		}
-		if err := writeFullConn(conn, chunk[:n]); err != nil {
+		if err := connutil.WriteFull(conn, chunk[:n]); err != nil {
 			return written, err
 		}
 		written += int64(n)

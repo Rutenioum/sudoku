@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
+	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 )
 
 func TestOfficialInterop_HTTPMaskAutoReuseHalfClose(t *testing.T) {
@@ -110,7 +111,7 @@ func runOfficialDirectionalHalfCloseExchange(clientPort int, target string) erro
 	}
 	defer conn.Close()
 
-	if err := writeFullConn(conn, []byte("start")); err != nil {
+	if err := connutil.WriteFull(conn, []byte("start")); err != nil {
 		return fmt.Errorf("write start: %w", err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -122,7 +123,7 @@ func runOfficialDirectionalHalfCloseExchange(clientPort int, target string) erro
 	if string(response) != "response" {
 		return fmt.Errorf("response = %q", response)
 	}
-	if err := writeFullConn(conn, []byte("tail")); err != nil {
+	if err := connutil.WriteFull(conn, []byte("tail")); err != nil {
 		return fmt.Errorf("write tail after EOF: %w", err)
 	}
 	if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
@@ -176,7 +177,7 @@ func runOfficialHalfCloseExchange(clientPort int, target string, id int) error {
 	defer conn.Close()
 
 	payload := []byte(fmt.Sprintf("auto-reuse-%02d", id))
-	if err := writeFullConn(conn, payload); err != nil {
+	if err := connutil.WriteFull(conn, payload); err != nil {
 		return fmt.Errorf("write payload %d: %w", id, err)
 	}
 	tcpConn, ok := conn.(*net.TCPConn)
@@ -206,7 +207,7 @@ func dialOfficialProxyTunnel(clientPort int, target string) (net.Conn, error) {
 	}
 
 	request := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
-	if err := writeFullConn(conn, []byte(request)); err != nil {
+	if err := connutil.WriteFull(conn, []byte(request)); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("write CONNECT: %w", err)
 	}

@@ -1,4 +1,4 @@
-package main
+package tests
 
 import (
 	"bufio"
@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SUDOKU-ASCII/sudoku/internal/app"
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
@@ -154,7 +155,7 @@ func copyWAN(dst, src net.Conn, profile wanProfile, direction int64, lastActivit
 			if delay > 0 {
 				time.Sleep(delay)
 			}
-			if writeFull(dst, buf[:n]) != nil {
+			if connutil.WriteFull(dst, buf[:n]) != nil {
 				return
 			}
 			lastActivity.Store(time.Now().UnixNano())
@@ -338,7 +339,7 @@ func TestWAN200msLossyAutoReuseHalfClose(t *testing.T) {
 			t.Fatalf("dial %d: %v", i, err)
 		}
 		payload := []byte(fmt.Sprintf("wan-auto-reuse-%02d", i))
-		if err := writeFull(conn, payload); err != nil {
+		if err := connutil.WriteFull(conn, payload); err != nil {
 			_ = conn.Close()
 			t.Fatalf("write %d: %v", i, err)
 		}
@@ -408,7 +409,7 @@ func TestWAN200msLossyDownlinkHalfCloseKeepsUplink(t *testing.T) {
 			}
 			relayed := relayWANConn(t, conn)
 			defer relayed.Close()
-			if err := writeFull(relayed, []byte("start")); err != nil {
+			if err := connutil.WriteFull(relayed, []byte("start")); err != nil {
 				t.Fatalf("write start: %v", err)
 			}
 			response, err := io.ReadAll(relayed)
@@ -418,7 +419,7 @@ func TestWAN200msLossyDownlinkHalfCloseKeepsUplink(t *testing.T) {
 			if string(response) != "response" {
 				t.Fatalf("response = %q", response)
 			}
-			if err := writeFull(relayed, []byte("tail")); err != nil {
+			if err := connutil.WriteFull(relayed, []byte("tail")); err != nil {
 				t.Fatalf("write tail after EOF: %v", err)
 			}
 			if closeWriter, ok := relayed.(interface{ CloseWrite() error }); !ok {
@@ -507,7 +508,7 @@ func TestWANMuxKeepaliveSurvivesIdleCarrierTimeout(t *testing.T) {
 
 func startWANHalfCloseTarget(t testing.TB, delay time.Duration) string {
 	t.Helper()
-	return startWANTarget(t, func(conn net.Conn) {
+	return startTarget(t, func(conn net.Conn) {
 		payload, err := io.ReadAll(conn)
 		if err != nil {
 			return
@@ -525,7 +526,7 @@ type wanDirectionalHalfCloseResult struct {
 func startWANDirectionalHalfCloseTarget(t testing.TB) (string, <-chan wanDirectionalHalfCloseResult) {
 	t.Helper()
 	results := make(chan wanDirectionalHalfCloseResult, 3)
-	addr := startWANTarget(t, func(conn net.Conn) {
+	addr := startTarget(t, func(conn net.Conn) {
 		start := make([]byte, len("start"))
 		if _, err := io.ReadFull(conn, start); err != nil {
 			results <- wanDirectionalHalfCloseResult{err: err}
@@ -554,29 +555,6 @@ func startWANDirectionalHalfCloseTarget(t testing.TB) (string, <-chan wanDirecti
 	return addr, results
 }
 
-func startWANTarget(t testing.TB, handle func(net.Conn)) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen WAN target: %v", err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer conn.Close()
-				handle(conn)
-			}()
-		}
-	}()
-	return listener.Addr().String()
-}
-
 type wanMuxHarness struct {
 	originAddr string
 	tables     []*sudoku.Table
@@ -595,13 +573,14 @@ func newWANMuxHarness(t testing.TB, profile wanProfile) *wanMuxHarness {
 	t.Cleanup(origin.Close)
 
 	const key = "wan-mux-simulation-key"
-	tables, err := getTables(key, "prefer_entropy", "default")
+	serverPort, err := getFreePort()
 	if err != nil {
-		t.Fatalf("build WAN tables: %v", err)
+		t.Fatalf("WAN server port: %v", err)
 	}
 	serverCfg := &config.Config{
 		Mode:               "server",
 		Transport:          "tcp",
+		LocalPort:          serverPort,
 		Key:                key,
 		AEAD:               "chacha20-poly1305",
 		SuspiciousAction:   "silent",
@@ -618,15 +597,14 @@ func newWANMuxHarness(t testing.TB, profile wanProfile) *wanMuxHarness {
 	if err := serverCfg.Finalize(); err != nil {
 		t.Fatalf("finalize WAN server config: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	server, err := startSudokuServer(ctx, serverCfg, tables, false)
+	tables, err := app.BuildTables(serverCfg)
 	if err != nil {
-		t.Fatalf("start WAN Sudoku server: %v", err)
+		t.Fatalf("build WAN tables: %v", err)
 	}
-	t.Cleanup(func() { _ = server.close() })
+	go app.RunServer(serverCfg, tables)
+	waitForPort(t, serverPort)
 
-	proxy := startWANProxy(t, server.serverAddr, profile)
+	proxy := startWANProxy(t, localServerAddr(serverPort), profile)
 	return &wanMuxHarness{
 		originAddr: strings.TrimPrefix(origin.URL, "http://"),
 		tables:     tables,
