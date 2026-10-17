@@ -203,7 +203,10 @@ func writeUploadResult(rawConn net.Conn, err error) (HandleResult, net.Conn, err
 
 const maxUploadBytes = 1 << 20 // per request
 
-var errUploadTooLarge = errors.New("upload too large")
+var (
+	errUploadTooLarge    = errors.New("upload too large")
+	errUploadSequenceGap = errors.New("upload sequence gap")
+)
 
 // sessionCodec is how a mode carries tunnel bytes: raw octets for stream, one
 // base64 line per payload for poll.
