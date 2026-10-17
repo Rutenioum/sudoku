@@ -347,7 +347,7 @@ func HandshakeAndUpgradeWithTablesMeta(rawConn net.Conn, cfg *config.Config, tab
 	}
 
 	sConn.StopRecording()
-	return wrapConnWithObfsMeta(cConn, selected.UplinkMode), meta, nil
+	return WrapConnWithObfsMeta(cConn, selected.UplinkMode), meta, nil
 }
 
 func maybeConsumeLegacyHTTPMask(rawConn net.Conn, r *bufio.Reader, cfg *config.Config) ([]byte, *SuspiciousError) {

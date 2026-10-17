@@ -92,10 +92,6 @@ func WrapConnWithObfsMeta(conn net.Conn, uplinkMode ObfsUplinkMode) net.Conn {
 	return &connWithObfsMeta{Conn: conn, uplinkPacked: uplinkMode == ObfsUplinkPacked}
 }
 
-func wrapConnWithObfsMeta(conn net.Conn, uplinkMode ObfsUplinkMode) net.Conn {
-	return WrapConnWithObfsMeta(conn, uplinkMode)
-}
-
 type downlinkWriterSwitcher interface {
 	ReplaceWriter(writer io.Writer, closers ...func() error)
 }
@@ -147,7 +143,7 @@ func buildClientObfsConnForMode(raw net.Conn, table *sudoku.Table, paddingMin, p
 		writer = sudoku.NewConn(raw, uplinkTable, paddingMin, paddingMax, false)
 	}
 
-	return wrapConnWithObfsMeta(sudoku.NewDirectionalConn(raw, reader, writer, closers...), uplinkMode)
+	return WrapConnWithObfsMeta(sudoku.NewDirectionalConn(raw, reader, writer, closers...), uplinkMode)
 }
 
 func buildServerObfsConnForMode(raw net.Conn, table *sudoku.Table, paddingMin, paddingMax int, pureDownlink bool, uplinkMode ObfsUplinkMode, record bool) (RecordingObfsConn, net.Conn) {
@@ -159,7 +155,7 @@ func buildServerObfsConnForMode(raw net.Conn, table *sudoku.Table, paddingMin, p
 		uplink = sudoku.NewConn(raw, table, paddingMin, paddingMax, record)
 	}
 	downlink, closers := sudoku.NewServerDownlinkWriter(raw, table.OppositeDirection(), paddingMin, paddingMax, pureDownlink)
-	return uplink, wrapConnWithObfsMeta(sudoku.NewDirectionalConn(raw, uplink, downlink, closers...), uplinkMode)
+	return uplink, WrapConnWithObfsMeta(sudoku.NewDirectionalConn(raw, uplink, downlink, closers...), uplinkMode)
 }
 
 // buildObfsConnForClient builds the obfuscation layer for client side, keeping Sudoku on uplink.

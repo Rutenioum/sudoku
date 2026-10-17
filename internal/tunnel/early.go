@@ -135,7 +135,7 @@ func NewEarlyClientState(cfg EarlyCodecConfig, table *sudoku.Table, tableHint ui
 
 	mem := newEarlyMemoryConn(nil)
 	obfsConn := buildEarlyClientObfsConn(mem, cfg, table)
-	pskC2S, pskS2C := DerivePSKDirectionalBases(cfg.PSK)
+	pskC2S, pskS2C := derivePSKDirectionalBases(cfg.PSK)
 	rc, err := crypto.NewRecordConn(obfsConn, cfg.AEAD, pskC2S, pskS2C)
 	if err != nil {
 		return nil, fmt.Errorf("client early crypto setup failed: %w", err)
@@ -159,7 +159,7 @@ func (s *EarlyClientState) ProcessResponse(payload []byte) error {
 	}
 	mem := newEarlyMemoryConn(payload)
 	obfsConn := buildEarlyClientObfsConn(mem, s.cfg, s.table)
-	pskC2S, pskS2C := DerivePSKDirectionalBases(s.cfg.PSK)
+	pskC2S, pskS2C := derivePSKDirectionalBases(s.cfg.PSK)
 	rc, err := crypto.NewRecordConn(obfsConn, s.cfg.AEAD, pskC2S, pskS2C)
 	if err != nil {
 		return fmt.Errorf("client early crypto setup failed: %w", err)
@@ -180,11 +180,11 @@ func (s *EarlyClientState) ProcessResponse(payload []byte) error {
 		return fmt.Errorf("early handshake nonce mismatch")
 	}
 
-	shared, err := X25519SharedSecret(s.ephemeral, sh.ServerPub[:])
+	shared, err := x25519SharedSecret(s.ephemeral, sh.ServerPub[:])
 	if err != nil {
 		return fmt.Errorf("ecdh failed: %w", err)
 	}
-	s.sessionC2S, s.sessionS2C, err = DeriveSessionDirectionalBases(s.cfg.PSK, shared, s.nonce)
+	s.sessionC2S, s.sessionS2C, err = deriveSessionDirectionalBases(s.cfg.PSK, shared, s.nonce)
 	if err != nil {
 		return fmt.Errorf("derive session keys failed: %w", err)
 	}
@@ -253,7 +253,7 @@ func ProcessEarlyClientPayload(cfg EarlyCodecConfig, tables []*sudoku.Table, pay
 func processEarlyClientPayloadForTable(cfg EarlyCodecConfig, tables []*sudoku.Table, table *sudoku.Table, uplinkMode ObfsUplinkMode, payload []byte, allowReplay ReplayAllowFunc) (*EarlyServerState, error) {
 	mem := newEarlyMemoryConn(payload)
 	obfsConn := buildEarlyServerObfsConn(mem, cfg, table, uplinkMode)
-	pskC2S, pskS2C := DerivePSKDirectionalBases(cfg.PSK)
+	pskC2S, pskS2C := derivePSKDirectionalBases(cfg.PSK)
 	rc, err := crypto.NewRecordConn(obfsConn, cfg.AEAD, pskS2C, pskC2S)
 	if err != nil {
 		return nil, err
@@ -288,11 +288,11 @@ func processEarlyClientPayloadForTable(cfg EarlyCodecConfig, tables []*sudoku.Ta
 	if err != nil {
 		return nil, fmt.Errorf("ecdh generate failed: %w", err)
 	}
-	shared, err := X25519SharedSecret(serverEphemeral, ch.ClientPub[:])
+	shared, err := x25519SharedSecret(serverEphemeral, ch.ClientPub[:])
 	if err != nil {
 		return nil, fmt.Errorf("ecdh failed: %w", err)
 	}
-	sessionC2S, sessionS2C, err := DeriveSessionDirectionalBases(cfg.PSK, shared, ch.Nonce)
+	sessionC2S, sessionS2C, err := deriveSessionDirectionalBases(cfg.PSK, shared, ch.Nonce)
 	if err != nil {
 		return nil, fmt.Errorf("derive session keys failed: %w", err)
 	}
@@ -338,7 +338,7 @@ func (s *EarlyServerState) WrapConn(raw net.Conn) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("setup server session crypto failed: %w", err)
 	}
-	return wrapConnWithObfsMeta(rc, s.uplinkMode), nil
+	return WrapConnWithObfsMeta(rc, s.uplinkMode), nil
 }
 
 func NewHTTPMaskServerEarlyHandshake(cfg EarlyCodecConfig, tables []*sudoku.Table, allowReplay ReplayAllowFunc) *httpmask.TunnelServerEarlyHandshake {

@@ -255,7 +255,7 @@ func (d *MuxDialer) createSession(ctx context.Context) (*muxSession, error) {
 		return nil, fmt.Errorf("mux requires multiplex=on (got %q)", d.Config.MultiplexMode())
 	}
 
-	baseConn, err := d.dialBaseContext(ctx)
+	baseConn, err := d.dial(ctx, ObfsUplinkPure)
 	if err != nil {
 		return nil, err
 	}
