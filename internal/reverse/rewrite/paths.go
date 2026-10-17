@@ -47,23 +47,49 @@ func NormalizePrefix(prefix string) string {
 	return prefix
 }
 
+// splicer builds a copy of src with some ranges replaced. It allocates only once the first
+// edit arrives, so scanning input that needs no rewrite costs nothing.
+type splicer struct {
+	src    []byte
+	out    []byte
+	last   int // src[:last] has been consumed
+	edited bool
+}
+
+// replace swaps src[start:end] for with; edits must come in ascending order.
+func (s *splicer) replace(start, end int, with []byte) {
+	if !s.edited {
+		s.out = make([]byte, 0, len(s.src)+len(s.src)/16)
+		s.edited = true
+	}
+	s.out = append(s.out, s.src[s.last:start]...)
+	s.out = append(s.out, with...)
+	s.last = end
+}
+
+// bytes returns src itself when nothing was replaced.
+func (s *splicer) bytes() []byte {
+	if !s.edited {
+		return s.src
+	}
+	return append(s.out, s.src[s.last:]...)
+}
+
 func rewriteRootAbsolutePaths(in []byte, prefix string) []byte {
 	p := normalizedPrefixBytes(prefix)
 	if len(in) == 0 || p == nil {
 		return in
 	}
+	s := splicer{src: in}
+	s.prefixRootAbsolute(0, len(in), p)
+	return s.bytes()
+}
 
-	var (
-		out  bytes.Buffer
-		last int
-	)
-	out.Grow(len(in) + len(in)/16)
-
-	writePrefixAt := func(slashIndex int) {
-		out.Write(in[last:slashIndex])
-		out.Write(p)
-		last = slashIndex
-	}
+// prefixRootAbsolute inserts prefix before each root-absolute URL in src[from:to],
+// reading that range as a document of its own.
+func (s *splicer) prefixRootAbsolute(from, to int, prefix []byte) {
+	in := s.src[from:to]
+	insert := func(slash int) { s.replace(from+slash, from+slash, prefix) }
 
 	for i := 0; i+1 < len(in); i++ {
 		switch in[i] {
@@ -81,10 +107,10 @@ func rewriteRootAbsolutePaths(in []byte, prefix string) []byte {
 			if slash+1 < len(in) && isURLTerminalByte(in[slash+1]) {
 				continue
 			}
-			if urlHasPathPrefix(in[slash:], p) {
+			if urlHasPathPrefix(in[slash:], prefix) {
 				continue
 			}
-			writePrefixAt(slash)
+			insert(slash)
 			i = slash
 		default:
 		}
@@ -119,18 +145,12 @@ func rewriteRootAbsolutePaths(in []byte, prefix string) []byte {
 		if slash+1 < len(in) && isURLTerminalByte(in[slash+1]) {
 			continue
 		}
-		if urlHasPathPrefix(in[slash:], p) {
+		if urlHasPathPrefix(in[slash:], prefix) {
 			continue
 		}
-		writePrefixAt(slash)
+		insert(slash)
 		i = slash
 	}
-
-	if last == 0 {
-		return in
-	}
-	out.Write(in[last:])
-	return out.Bytes()
 }
 
 func rewriteHTMLSrcset(in []byte, prefix string) []byte {
@@ -139,13 +159,7 @@ func rewriteHTMLSrcset(in []byte, prefix string) []byte {
 		return in
 	}
 
-	var (
-		out      bytes.Buffer
-		last     int
-		modified bool
-	)
-	out.Grow(len(in) + len(in)/32)
-
+	s := splicer{src: in}
 	for i := 0; i < len(in); i++ {
 		if lowerASCII(in[i]) != 's' || i+6 >= len(in) {
 			continue
@@ -183,37 +197,16 @@ func rewriteHTMLSrcset(in []byte, prefix string) []byte {
 			break
 		}
 
-		val := in[valStart:valEnd]
-		newVal := rewriteSrcsetValue(val, p)
-		if bytes.Equal(val, newVal) {
-			i = valEnd
-			continue
-		}
-
-		out.Write(in[last:valStart])
-		out.Write(newVal)
-		last = valEnd
+		s.prefixSrcsetURLs(valStart, valEnd, p)
 		i = valEnd
-		modified = true
 	}
-
-	if !modified {
-		return in
-	}
-	out.Write(in[last:])
-	return out.Bytes()
+	return s.bytes()
 }
 
-func rewriteSrcsetValue(val []byte, prefix []byte) []byte {
-	if len(val) == 0 || len(prefix) == 0 {
-		return val
-	}
-	var (
-		out  bytes.Buffer
-		last int
-	)
-	out.Grow(len(val) + len(val)/16)
-
+// prefixSrcsetURLs inserts prefix before each root-absolute candidate URL of the srcset
+// value src[from:to].
+func (s *splicer) prefixSrcsetURLs(from, to int, prefix []byte) {
+	val := s.src[from:to]
 	for i := 0; i < len(val); i++ {
 		if val[i] != '/' {
 			continue
@@ -237,16 +230,8 @@ func rewriteSrcsetValue(val []byte, prefix []byte) []byte {
 			continue
 		}
 
-		out.Write(val[last:i])
-		out.Write(prefix)
-		last = i
+		s.replace(from+i, from+i, prefix)
 	}
-
-	if last == 0 {
-		return val
-	}
-	out.Write(val[last:])
-	return out.Bytes()
 }
 
 func isURLTerminalByte(b byte) bool {

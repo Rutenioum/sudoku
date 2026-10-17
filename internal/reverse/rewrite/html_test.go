@@ -109,6 +109,8 @@ func TestRewriteHTMLSrcsetTable(t *testing.T) {
 		name, in, want string
 	}{
 		{"candidates", `<img srcset="/a.png 1x, /b.png 2x">`, `<img srcset="/p/a.png 1x, /p/b.png 2x">`},
+		{"single candidate", `<img srcset="/a.png 1x">`, `<img srcset="/p/a.png 1x">`},
+		{"only the second candidate needs a prefix", `<img srcset="/p/a.png 1x, /b.png 2x">`, `<img srcset="/p/a.png 1x, /p/b.png 2x">`},
 		{"protocol relative and prefixed untouched", `<img srcset="//c/a.png 1x,/p/b.png 2x">`, `<img srcset="//c/a.png 1x,/p/b.png 2x">`},
 		{"relative untouched", `<img srcset="a.png 1x, b.png 2x">`, `<img srcset="a.png 1x, b.png 2x">`},
 		{"attribute name is case-insensitive", `<img SRCSET = '/a.png 1x, /b.png 2x'>`, `<img SRCSET = '/p/a.png 1x, /p/b.png 2x'>`},
@@ -165,10 +167,4 @@ func TestRewriteKnownQuirks(t *testing.T) {
 		}
 	})
 
-	t.Run("srcset pass alone drops a rewrite that only touches the first candidate", func(t *testing.T) {
-		in := `<img srcset="/a.png 1x">`
-		if got := string(rewriteHTMLSrcset([]byte(in), "/p")); got != in {
-			t.Fatalf("got %q, want input unchanged", got)
-		}
-	})
 }

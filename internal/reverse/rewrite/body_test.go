@@ -30,7 +30,7 @@ import (
 	"testing"
 )
 
-func gzipBytes(t *testing.T, s string) []byte {
+func gzipBytes(t testing.TB, s string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
