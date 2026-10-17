@@ -229,12 +229,8 @@ func (c *Config) Finalize() error {
 			c.RuleURLs = nil
 		}
 	}
-	if len(c.RuleURLs) > 0 {
-		if hasActionableRuleURLs(c.RuleURLs) {
-			c.ProxyMode = "pac"
-		} else {
-			c.ProxyMode = normalizeProxyMode(c.ProxyMode)
-		}
+	if len(c.RuleURLs) > 0 && hasActionableRuleURLs(c.RuleURLs) {
+		c.ProxyMode = "pac"
 	} else {
 		c.ProxyMode = normalizeProxyMode(c.ProxyMode)
 	}
@@ -263,8 +259,4 @@ func (c *Config) MultiplexMode() string {
 
 func (c *Config) SessionMuxEnabled() bool {
 	return c.MultiplexMode() == "on"
-}
-
-func (c *Config) HTTPMaskSessionMuxEnabled() bool {
-	return c.SessionMuxEnabled()
 }
