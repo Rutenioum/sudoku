@@ -19,7 +19,10 @@ with this application without prior consent.
 */
 package app
 
-import "net"
+import (
+	"net"
+	"net/netip"
+)
 
 // Seams so tests can fake the host's network interfaces.
 var networkInterfaces = net.Interfaces
@@ -160,11 +163,8 @@ func initialUDPAssociateClientIP(ip net.IP) net.IP {
 	return ip
 }
 
-func peerKey(addr *net.UDPAddr) string {
-	if addr == nil {
-		return ""
-	}
-	cpy := *addr
-	cpy.IP = normalizeIP(cpy.IP)
-	return cpy.String()
+// addrFromIP converts ip to an unmapped netip.Addr; nil gives the invalid zero Addr.
+func addrFromIP(ip net.IP) netip.Addr {
+	a, _ := netip.AddrFromSlice(ip)
+	return a.Unmap()
 }

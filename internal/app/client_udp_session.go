@@ -23,13 +23,27 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
 )
+
+const (
+	udpResolveTimeout = 2 * time.Second
+	udpPeerTTL        = 2 * time.Minute
+	udpLogQuietTTL    = 30 * time.Second
+)
+
+// routeLogKey identifies a destination whose route has been logged, so each is logged once per quiet window.
+type routeLogKey struct {
+	action routeAction
+	dest   string
+}
 
 type uotClientSession struct {
 	ctrlConn  net.Conn
@@ -42,33 +56,30 @@ type uotClientSession struct {
 	resolver  *dnsutil.Resolver
 
 	closeOnce sync.Once
-	closed    chan struct{}
 
-	clientAddrMu sync.RWMutex
-	clientAddr   *net.UDPAddr
+	// clientAddr is where replies go: the source of the latest request.
+	clientAddr atomic.Pointer[netip.AddrPort]
 
-	allowedClientIP net.IP
-	peerTTL         time.Duration
-	peers           ttlSet[string]
-	logTTL          time.Duration
-	logOnce         ttlSet[string]
+	// allowedClient is the only source IP whose datagrams count as requests; any other source must be a
+	// direct peer. It is invalid until the first request when the control peer's address is unusable.
+	allowedClient netip.Addr
+	peers         ttlSet[netip.AddrPort] // direct destinations that may reply
+	logOnce       ttlSet[routeLogKey]
+	reply         []byte // scratch for replies built by pipeClientToServer's goroutine
 }
 
 func newUoTClientSession(ctrl net.Conn, udpConn *net.UDPConn, uotConn net.Conn, udpNet string, cfg *config.Config, routeMgrs *routeManagers, resolver *dnsutil.Resolver) *uotClientSession {
 	sess := &uotClientSession{
-		ctrlConn:        ctrl,
-		udpConn:         udpConn,
-		uotConn:         uotConn,
-		udpNet:          udpNet,
-		cfg:             cfg,
-		routeMgrs:       routeMgrs,
-		resolver:        resolver,
-		closed:          make(chan struct{}),
-		allowedClientIP: initialUDPAssociateClientIP(ipFromNetAddr(ctrl.RemoteAddr())),
-		peerTTL:         2 * time.Minute,
-		peers:           newTTLSet[string](256),
-		logTTL:          30 * time.Second,
-		logOnce:         newTTLSet[string](1024),
+		ctrlConn:      ctrl,
+		udpConn:       udpConn,
+		uotConn:       uotConn,
+		udpNet:        udpNet,
+		cfg:           cfg,
+		routeMgrs:     routeMgrs,
+		resolver:      resolver,
+		allowedClient: addrFromIP(initialUDPAssociateClientIP(ipFromNetAddr(ctrl.RemoteAddr()))),
+		peers:         newTTLSet[netip.AddrPort](256),
+		logOnce:       newTTLSet[routeLogKey](1024),
 	}
 	sess.uotWriter = tunnel.NewUoTWriter(uotConn, func(error) { sess.close() })
 	return sess
@@ -86,7 +97,6 @@ func (s *uotClientSession) run() {
 
 func (s *uotClientSession) close() {
 	s.closeOnce.Do(func() {
-		close(s.closed)
 		s.uotWriter.Close()
 		_ = s.udpConn.Close()
 		_ = s.uotConn.Close()
@@ -102,11 +112,13 @@ func (s *uotClientSession) consumeControl() {
 func (s *uotClientSession) pipeClientToServer() {
 	buf := make([]byte, 65535)
 	for {
-		n, from, err := s.udpConn.ReadFromUDP(buf)
+		n, from, err := s.udpConn.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			s.close()
 			return
 		}
+		// A dual-stack socket reports IPv4 sources as IPv4-mapped IPv6.
+		from = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
 		if err := s.handlePacket(from, buf[:n]); err != nil {
 			s.close()
 			return
@@ -116,97 +128,105 @@ func (s *uotClientSession) pipeClientToServer() {
 
 // handlePacket dispatches one datagram from the relay socket: either a reply from a direct peer or a
 // SOCKS5 UDP request from the client. A non-nil error means a write failed and the session must end.
-func (s *uotClientSession) handlePacket(from *net.UDPAddr, pkt []byte) error {
-	srcIP := normalizeIP(from.IP)
-	if s.allowedClientIP != nil && !s.allowedClientIP.Equal(srcIP) {
+func (s *uotClientSession) handlePacket(from netip.AddrPort, pkt []byte) error {
+	if s.allowedClient.IsValid() && s.allowedClient != from.Addr().WithZone("") {
 		return s.relayPeerResponse(from, pkt)
 	}
-	return s.relayClientDatagram(from, srcIP, pkt)
+	return s.relayClientDatagram(from, pkt)
 }
 
-func (s *uotClientSession) relayPeerResponse(from *net.UDPAddr, pkt []byte) error {
-	if !s.peers.Has(peerKey(from)) {
+func (s *uotClientSession) relayPeerResponse(from netip.AddrPort, pkt []byte) error {
+	if !s.peers.Has(from) {
 		return nil
 	}
-	clientAddr := s.getClientAddr()
+	clientAddr := s.clientAddr.Load()
 	if clientAddr == nil {
 		return nil
 	}
-	if resp := buildUDPResponsePacket(udpAddrString(from), pkt); resp != nil {
-		_, err := s.udpConn.WriteToUDP(resp, clientAddr)
-		return err
-	}
-	return nil
+	s.reply = append(appendSocks5UDPHeader(s.reply[:0], from), pkt...)
+	_, err := s.udpConn.WriteToUDPAddrPort(s.reply, *clientAddr)
+	return err
 }
 
-func (s *uotClientSession) relayClientDatagram(from *net.UDPAddr, srcIP net.IP, pkt []byte) error {
-	destAddr, destIP, payload, err := decodeSocks5UDPRequest(pkt)
+func (s *uotClientSession) relayClientDatagram(from netip.AddrPort, pkt []byte) error {
+	req, err := parseSocks5UDPRequest(pkt)
 	if err != nil {
 		return nil
 	}
-	if s.allowedClientIP == nil && srcIP != nil {
-		s.allowedClientIP = srcIP
+	if !s.allowedClient.IsValid() {
+		s.allowedClient = from.Addr().WithZone("")
 	}
 	s.setClientAddr(from)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	decision := decideRoute(s.cfg, s.routeMgrs, destAddr, destIP)
-
+	decision := decideRoute(s.cfg, s.routeMgrs, req.destAddr, req.destIP)
 	if decision.action == routeActionReject {
-		s.logRouteOnce(from, destAddr, decision)
+		s.logRouteOnce(from, req.destAddr, decision)
 		return nil
 	}
 
-	shouldProxy := decision.shouldProxy()
-	if !shouldProxy {
-		directAddr, err := resolveUDPAddr(ctx, destAddr, s.resolver)
-		if err != nil {
+	if !decision.shouldProxy() {
+		direct, err := s.directAddr(req)
+		switch {
+		case err != nil:
 			decision.action = routeActionProxy
 			decision.match += "/RESOLVE_FAIL"
-			shouldProxy = true
-		} else if directAddr != nil && directAddr.IP != nil && directAddr.IP.To4() == nil && s.udpNet == "udp4" {
+		case direct.Addr().Is6() && s.udpNet == "udp4":
 			decision.action = routeActionProxy
 			decision.match += "/IPV6->PROXY"
-			shouldProxy = true
-		} else if directAddr != nil {
-			s.peers.Add(peerKey(directAddr), s.peerTTL)
-			if _, err := s.udpConn.WriteToUDP(payload, directAddr); err != nil {
+		default:
+			s.peers.Add(direct, udpPeerTTL)
+			if _, err := s.udpConn.WriteToUDPAddrPort(req.payload, direct); err != nil {
 				return err
 			}
 		}
 	}
 
-	if shouldProxy {
-		if err := s.uotWriter.WriteDatagram(destAddr, payload); err != nil {
+	if decision.shouldProxy() {
+		if err := s.uotWriter.WriteDatagram(req.destAddr, req.payload); err != nil {
 			return err
 		}
 	}
 
-	s.logRouteOnce(from, destAddr, decision)
+	s.logRouteOnce(from, req.destAddr, decision)
 	return nil
 }
 
-func (s *uotClientSession) logRouteOnce(from *net.UDPAddr, destAddr string, decision routeDecision) {
-	if s.logOnce.Allow(decision.action.String()+"|"+destAddr, s.logTTL) {
-		logRoute("UDP", from, destAddr, decision)
+// directAddr is where a directly routed request goes, resolving domain names. IP destinations are used as is.
+func (s *uotClientSession) directAddr(req udpRequest) (netip.AddrPort, error) {
+	if req.literal.IsValid() {
+		return req.literal, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), udpResolveTimeout)
+	defer cancel()
+	addr, err := resolveUDPAddr(ctx, req.destAddr, s.resolver)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	return addr.AddrPort(), nil
+}
+
+func (s *uotClientSession) logRouteOnce(from netip.AddrPort, destAddr string, decision routeDecision) {
+	if s.logOnce.Allow(routeLogKey{decision.action, destAddr}, udpLogQuietTTL) {
+		logRoute("UDP", net.UDPAddrFromAddrPort(from), destAddr, decision)
 	}
 }
 
 func (s *uotClientSession) pipeServerToClient() {
+	var reply []byte
 	for {
-		addrStr, payload, err := tunnel.ReadUoTDatagram(s.uotConn)
+		addr, payload, err := tunnel.ReadUoTDatagram(s.uotConn)
 		if err != nil {
 			s.close()
 			return
 		}
 
-		clientAddr := s.getClientAddr()
+		clientAddr := s.clientAddr.Load()
 		if clientAddr == nil {
 			continue
 		}
-		if resp := buildUDPResponsePacket(addrStr, payload); resp != nil {
-			if _, err := s.udpConn.WriteToUDP(resp, clientAddr); err != nil {
+		var ok bool
+		if reply, ok = appendUDPResponse(reply[:0], addr, payload); ok {
+			if _, err := s.udpConn.WriteToUDPAddrPort(reply, *clientAddr); err != nil {
 				s.close()
 				return
 			}
@@ -214,20 +234,8 @@ func (s *uotClientSession) pipeServerToClient() {
 	}
 }
 
-func (s *uotClientSession) setClientAddr(addr *net.UDPAddr) {
-	if addr == nil {
-		return
+func (s *uotClientSession) setClientAddr(addr netip.AddrPort) {
+	if cur := s.clientAddr.Load(); cur == nil || *cur != addr {
+		s.clientAddr.Store(&addr)
 	}
-	s.clientAddrMu.Lock()
-	defer s.clientAddrMu.Unlock()
-	cpy := *addr
-	if s.clientAddr == nil || s.clientAddr.Port != addr.Port || !normalizeIP(s.clientAddr.IP).Equal(normalizeIP(addr.IP)) {
-		s.clientAddr = &cpy
-	}
-}
-
-func (s *uotClientSession) getClientAddr() *net.UDPAddr {
-	s.clientAddrMu.RLock()
-	defer s.clientAddrMu.RUnlock()
-	return s.clientAddr
 }

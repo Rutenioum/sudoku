@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -110,7 +111,7 @@ func newUDPSocket(t testing.TB, keep bool) *udpSocket {
 	return s
 }
 
-func (s *udpSocket) udpAddr() *net.UDPAddr { return s.LocalAddr().(*net.UDPAddr) }
+func (s *udpSocket) udpAddr() netip.AddrPort { return s.LocalAddr().(*net.UDPAddr).AddrPort() }
 
 func (s *udpSocket) next(t testing.TB) []byte {
 	t.Helper()
@@ -157,7 +158,7 @@ func newUDPSessionHarness(t testing.TB, cfg *config.Config, mgrs *routeManagers,
 
 // clientAddr is the SOCKS5 client's source address. It is deliberately not a loopback address so that
 // loopback sockets in the harness count as peers rather than as the client.
-var clientAddr = &net.UDPAddr{IP: net.IPv4(10, 9, 9, 9), Port: 5000}
+var clientAddr = netip.MustParseAddrPort("10.9.9.9:5000")
 
 func socks5UDPRequest(t testing.TB, dest, payload string) []byte {
 	t.Helper()
@@ -179,9 +180,8 @@ func (h *udpSessionHarness) fromClient(t testing.TB, dest, payload string) {
 
 // pointRepliesAtClientSocket redirects replies to a socket we can read, since clientAddr is not routable.
 func (h *udpSessionHarness) pointRepliesAtClientSocket() {
-	h.sess.clientAddrMu.Lock()
-	h.sess.clientAddr = h.client.udpAddr()
-	h.sess.clientAddrMu.Unlock()
+	addr := h.client.udpAddr()
+	h.sess.clientAddr.Store(&addr)
 }
 
 func (h *udpSessionHarness) waitForFrames(t testing.TB, n int) []udpFrame {
@@ -235,7 +235,8 @@ func TestUDPSessionDirectPathAndReply(t *testing.T) {
 	if err := h.sess.handlePacket(h.sink.udpAddr(), []byte("from-peer")); err != nil {
 		t.Fatalf("reply: %v", err)
 	}
-	want := append([]byte{0, 0, 0, 1, 127, 0, 0, 1, byte(h.sink.udpAddr().Port >> 8), byte(h.sink.udpAddr().Port)}, "from-peer"...)
+	port := h.sink.udpAddr().Port()
+	want := append([]byte{0, 0, 0, 1, 127, 0, 0, 1, byte(port >> 8), byte(port)}, "from-peer"...)
 	if got := h.client.next(t); !bytes.Equal(got, want) {
 		t.Fatalf("client received %x, want %x", got, want)
 	}
@@ -263,8 +264,8 @@ func TestUDPSessionIgnoresMalformedRequests(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
-	if h.sess.allowedClientIP != nil {
-		t.Fatalf("a malformed request pinned the client IP to %v", h.sess.allowedClientIP)
+	if h.sess.allowedClient.IsValid() {
+		t.Fatalf("a malformed request pinned the client IP to %v", h.sess.allowedClient)
 	}
 	if h.uot.written.Load() != 0 {
 		t.Fatal("malformed request was tunneled")
@@ -274,11 +275,11 @@ func TestUDPSessionIgnoresMalformedRequests(t *testing.T) {
 func TestUDPSessionPinsFirstClientIP(t *testing.T) {
 	h := newUDPSessionHarness(t, &config.Config{ProxyMode: "global"}, nil, true)
 	h.fromClient(t, "8.8.8.8:53", "first")
-	if !h.sess.allowedClientIP.Equal(clientAddr.IP) {
-		t.Fatalf("allowed client IP = %v, want %v", h.sess.allowedClientIP, clientAddr.IP)
+	if h.sess.allowedClient != clientAddr.Addr() {
+		t.Fatalf("allowed client IP = %v, want %v", h.sess.allowedClient, clientAddr.Addr())
 	}
 
-	other := &net.UDPAddr{IP: net.IPv4(10, 8, 8, 8), Port: 6000}
+	other := netip.MustParseAddrPort("10.8.8.8:6000")
 	if err := h.sess.handlePacket(other, socks5UDPRequest(t, "8.8.8.8:53", "intruder")); err != nil {
 		t.Fatalf("handlePacket: %v", err)
 	}
@@ -352,8 +353,8 @@ func BenchmarkUDPPeerReply(b *testing.B) {
 	h := newUDPSessionHarness(b, &config.Config{ProxyMode: "direct"}, nil, false)
 	h.pointRepliesAtClientSocket()
 	peer := h.sink.udpAddr()
-	h.sess.allowedClientIP = clientAddr.IP
-	h.sess.peers.Add(peerKey(peer), time.Hour)
+	h.sess.allowedClient = clientAddr.Addr()
+	h.sess.peers.Add(peer, time.Hour)
 
 	pkt := bytes.Repeat([]byte{'y'}, 200)
 	b.ReportAllocs()
