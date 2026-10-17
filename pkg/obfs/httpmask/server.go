@@ -137,61 +137,59 @@ func (s *TunnelServer) HandleConn(rawConn net.Conn) (HandleResult, net.Conn, err
 		return HandlePassThrough, pc, nil
 	}
 
-	req, headerBytes, buffered, err := readHTTPHeader(br)
+	req, unparsed, err := readHTTPRequest(rawConn, br, first[:])
 	_ = rawConn.SetReadDeadline(time.Time{})
 	if err != nil {
 		// Not a valid HTTP request; hand it back to the legacy path with replay.
-		return passThrough(buildInvalidHTTPReplayPrefix(first[:], headerBytes, buffered))
+		return passThrough(unparsed)
 	}
 
-	replayPrefix := buildHTTPReplayPrefix(headerBytes, buffered)
-
-	tunnelHeader := TunnelMode(strings.ToLower(strings.TrimSpace(req.headers["x-sudoku-tunnel"])))
-	if looksLikeWebSocketUpgrade(req.headers) {
+	tunnelHeader := TunnelMode(strings.ToLower(strings.TrimSpace(req.tunnel)))
+	if req.isWebSocketUpgrade() {
 		tunnelHeader = TunnelModeWS
 	}
 	if tunnelHeader == "" {
 		// The explicit mode header is part of the stream/poll protocol. A request
 		// without it belongs to the normal HTTP fallback path.
-		return passThrough(replayPrefix)
+		return passThrough(req.replayPrefix())
 	}
 
 	if s.mode == TunnelModeLegacy {
-		return rejectOr404(replayPrefix)
+		return rejectOr404(req.replayPrefix())
 	}
 
 	switch tunnelHeader {
 	case TunnelModeStream:
 		if s.mode != TunnelModeStream && s.mode != TunnelModeAuto {
-			return rejectOr404(replayPrefix)
+			return rejectOr404(req.replayPrefix())
 		}
-		return s.handleSession(rawConn, req, headerBytes, buffered, streamCodec)
+		return s.handleSession(req, streamCodec)
 	case TunnelModePoll:
 		if s.mode != TunnelModePoll && s.mode != TunnelModeAuto {
-			return rejectOr404(replayPrefix)
+			return rejectOr404(req.replayPrefix())
 		}
-		return s.handleSession(rawConn, req, headerBytes, buffered, pollCodec)
+		return s.handleSession(req, pollCodec)
 	case TunnelModeWS:
 		if s.mode != TunnelModeWS && s.mode != TunnelModeAuto {
-			return rejectOr404(replayPrefix)
+			return rejectOr404(req.replayPrefix())
 		}
-		return s.handleWS(rawConn, req, headerBytes, buffered)
+		return s.handleWS(req)
 	default:
-		return rejectOr404(replayPrefix)
+		return rejectOr404(req.replayPrefix())
 	}
 }
 
-func (s *TunnelServer) rejectOrRespond(rawConn net.Conn, headerBytes, buffered []byte, code int, body string) (HandleResult, net.Conn, error) {
+// rejectOrRespond answers a rejected request with the given status, or replays it for pass-through fallback.
+// It must run before the request body is consumed.
+func (s *TunnelServer) rejectOrRespond(req *tunnelRequest, code int, body string) (HandleResult, net.Conn, error) {
 	if s.passThroughOnReject {
-		prefix := make([]byte, 0, len(headerBytes)+len(buffered))
-		prefix = append(prefix, headerBytes...)
-		prefix = append(prefix, buffered...)
-		return HandlePassThrough, newRejectedPreBufferedConn(rawConn, prefix), nil
+		return HandlePassThrough, newRejectedPreBufferedConn(req.conn, req.replayPrefix()), nil
 	}
-	return replyDone(rawConn, code, body)
+	return replyDone(req.conn, code, body)
 }
 
-func (s *TunnelServer) sessionAuthorize(rawConn net.Conn, headerBytes, buffered, earlyPayload []byte) (HandleResult, net.Conn, error) {
+func (s *TunnelServer) sessionAuthorize(req *tunnelRequest, earlyPayload []byte) (HandleResult, net.Conn, error) {
+	rawConn := req.conn
 	token, err := newSessionToken()
 	if err != nil {
 		return replyDone(rawConn, http.StatusInternalServerError, "internal error")
@@ -206,7 +204,7 @@ func (s *TunnelServer) sessionAuthorize(rawConn net.Conn, headerBytes, buffered,
 		if err != nil {
 			_ = c1.Close()
 			_ = c2.Close()
-			return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+			return s.rejectOrRespond(req, http.StatusNotFound, "not found")
 		}
 		responsePayload = prepared.ResponsePayload
 		userHash = prepared.UserHash

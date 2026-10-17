@@ -35,22 +35,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-func looksLikeWebSocketUpgrade(headers map[string]string) bool {
-	if headers == nil {
-		return false
-	}
-	if !strings.EqualFold(strings.TrimSpace(headers["upgrade"]), "websocket") {
-		return false
-	}
-	conn := headers["connection"]
-	for _, part := range strings.Split(conn, ",") {
-		if strings.EqualFold(strings.TrimSpace(part), "upgrade") {
-			return true
-		}
-	}
-	return false
-}
-
 type hijackRW struct {
 	conn  net.Conn
 	hdr   http.Header
@@ -123,45 +107,46 @@ func buildHTTPRequestFromHeaderBytes(headerBytes []byte, rawConn net.Conn) (*htt
 	return r, nil
 }
 
-func (s *TunnelServer) handleWS(rawConn net.Conn, req *httpRequestHeader, headerBytes []byte, buffered []byte) (HandleResult, net.Conn, error) {
+func (s *TunnelServer) handleWS(req *tunnelRequest) (HandleResult, net.Conn, error) {
+	rawConn := req.conn
 	u, err := url.ParseRequestURI(req.target)
 	if err != nil {
-		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(req, http.StatusBadRequest, "bad request")
 	}
 
 	path, ok := stripPathRoot(s.pathRoot, u.Path)
 	if !ok || path != "/ws" {
-		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+		return s.rejectOrRespond(req, http.StatusNotFound, "not found")
 	}
 	if strings.ToUpper(strings.TrimSpace(req.method)) != http.MethodGet {
-		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(req, http.StatusBadRequest, "bad request")
 	}
 
-	authVal := req.headers["authorization"]
+	authVal := req.authorization
 	if authVal == "" {
 		authVal = u.Query().Get(tunnelAuthQueryKey)
 	}
 	if !s.auth.verifyValue(authVal, TunnelModeWS, req.method, path, time.Now()) {
-		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+		return s.rejectOrRespond(req, http.StatusNotFound, "not found")
 	}
 
 	earlyPayload, err := parseEarlyDataQuery(u.Query())
 	if err != nil {
-		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(req, http.StatusBadRequest, "bad request")
 	}
 	var prepared *PreparedServerEarlyHandshake
 	if len(earlyPayload) > 0 && s.earlyHandshake != nil && s.earlyHandshake.Prepare != nil {
 		prepared, err = s.earlyHandshake.Prepare(earlyPayload)
 		if err != nil {
-			return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+			return s.rejectOrRespond(req, http.StatusNotFound, "not found")
 		}
 	}
 
 	// Preserve any bytes read beyond the HTTP header as initial WebSocket stream bytes.
-	wsConnRaw := newPreBufferedConn(rawConn, buffered)
-	r, err := buildHTTPRequestFromHeaderBytes(headerBytes, rawConn)
+	wsConnRaw := newPreBufferedConn(rawConn, req.buffered())
+	r, err := buildHTTPRequestFromHeaderBytes(req.headerBytes, rawConn)
 	if err != nil {
-		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(req, http.StatusBadRequest, "bad request")
 	}
 
 	rw := &hijackRW{conn: wsConnRaw}

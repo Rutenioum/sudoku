@@ -491,7 +491,7 @@ func TestTunnelServer_SessionTTL_ReapsAfterIdle(t *testing.T) {
 	)
 	done := make(chan struct{})
 	go func() {
-		res, c, err = srv.sessionAuthorize(server, nil, nil, nil)
+		res, c, err = srv.sessionAuthorize(&tunnelRequest{conn: server}, nil)
 		close(done)
 	}()
 

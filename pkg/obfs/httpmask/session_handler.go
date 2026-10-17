@@ -41,9 +41,9 @@ import (
 // handleSession serves one stream or poll request. The two modes share their
 // routing and differ only in payload encoding (codec) and in a few rejection
 // details that older clients and probes can observe, so those are preserved.
-func (s *TunnelServer) handleSession(rawConn net.Conn, req *httpRequestHeader, headerBytes, buffered []byte, codec sessionCodec) (HandleResult, net.Conn, error) {
+func (s *TunnelServer) handleSession(req *tunnelRequest, codec sessionCodec) (HandleResult, net.Conn, error) {
 	reject := func(code int, body string) (HandleResult, net.Conn, error) {
-		return s.rejectOrRespond(rawConn, headerBytes, buffered, code, body)
+		return s.rejectOrRespond(req, code, body)
 	}
 
 	u, err := url.ParseRequestURI(req.target)
@@ -65,7 +65,7 @@ func (s *TunnelServer) handleSession(rawConn net.Conn, req *httpRequestHeader, h
 			if err != nil {
 				return reject(http.StatusBadRequest, "bad request")
 			}
-			return s.sessionAuthorize(rawConn, headerBytes, buffered, earlyPayload)
+			return s.sessionAuthorize(req, earlyPayload)
 		}
 		// A tokenless pull is a bare 400 in stream mode but reaches the session
 		// lookup (403) in poll mode.
@@ -75,11 +75,11 @@ func (s *TunnelServer) handleSession(rawConn net.Conn, req *httpRequestHeader, h
 		if s.passThroughOnReject && !s.sessions.has(token) {
 			return reject(http.StatusNotFound, "not found")
 		}
-		return s.pull(rawConn, token, codec)
+		return s.pull(req.conn, token, codec)
 
 	case http.MethodPost:
 		if path == uploadPath && token != "" {
-			return s.handleUpload(rawConn, req, headerBytes, buffered, query, codec)
+			return s.handleUpload(req, query, codec)
 		}
 		if codec.poll {
 			if path != uploadPath {
@@ -87,7 +87,7 @@ func (s *TunnelServer) handleSession(rawConn net.Conn, req *httpRequestHeader, h
 			}
 			return reject(http.StatusBadRequest, "missing token")
 		}
-		return s.startStreamOne(rawConn, req, buffered)
+		return s.startStreamOne(req)
 
 	default:
 		return reject(http.StatusBadRequest, "bad request")
@@ -95,9 +95,10 @@ func (s *TunnelServer) handleSession(rawConn net.Conn, req *httpRequestHeader, h
 }
 
 // handleUpload serves POST <root>/api/v1/upload?token=...: close, FIN or a payload push.
-func (s *TunnelServer) handleUpload(rawConn net.Conn, req *httpRequestHeader, headerBytes, buffered []byte, query url.Values, codec sessionCodec) (HandleResult, net.Conn, error) {
+func (s *TunnelServer) handleUpload(req *tunnelRequest, query url.Values, codec sessionCodec) (HandleResult, net.Conn, error) {
+	rawConn := req.conn
 	reject := func(code int, body string) (HandleResult, net.Conn, error) {
-		return s.rejectOrRespond(rawConn, headerBytes, buffered, code, body)
+		return s.rejectOrRespond(req, code, body)
 	}
 	token := query.Get("token")
 
@@ -112,7 +113,7 @@ func (s *TunnelServer) handleUpload(rawConn net.Conn, req *httpRequestHeader, he
 	if s.passThroughOnReject && !s.sessions.has(token) {
 		return reject(http.StatusNotFound, "not found")
 	}
-	body, err := newRequestBodyReader(newPreBufferedConn(rawConn, buffered), req.headers)
+	body, err := req.body()
 	if err != nil {
 		if codec.poll {
 			return reject(http.StatusBadRequest, "bad request")
@@ -127,12 +128,13 @@ func (s *TunnelServer) handleUpload(rawConn net.Conn, req *httpRequestHeader, he
 }
 
 // startStreamOne turns a tokenless POST into a single full-duplex tunnel.
-func (s *TunnelServer) startStreamOne(rawConn net.Conn, req *httpRequestHeader, buffered []byte) (HandleResult, net.Conn, error) {
+func (s *TunnelServer) startStreamOne(req *tunnelRequest) (HandleResult, net.Conn, error) {
+	rawConn := req.conn
 	if err := writeTunnelResponseHeader(rawConn); err != nil {
 		_ = rawConn.Close()
 		return HandleDone, nil, err
 	}
-	bodyReader, err := newRequestBodyReader(newPreBufferedConn(rawConn, buffered), req.headers)
+	bodyReader, err := req.body()
 	if err != nil {
 		_ = rawConn.Close()
 		return HandleDone, nil, err
