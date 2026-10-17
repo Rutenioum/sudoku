@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
@@ -188,7 +189,8 @@ func perfStream(down, up int) func(*perfRig) {
 // perfConns opens short-lived connections (4 KiB echo each) as fast as `workers` allow.
 func perfConns(workers int) func(*perfRig) {
 	return func(r *perfRig) {
-		var ops atomic.Int64
+		var ops, failures atomic.Int64
+		var lastErr atomic.Value
 		stop := make(chan struct{})
 		var wg sync.WaitGroup
 		payload := patternBytes(5, 4096)
@@ -203,13 +205,17 @@ func perfConns(workers int) func(*perfRig) {
 					default:
 					}
 					c, err := dialOfficialProxyTunnel(r.pair.clientPort, r.echo)
+					if err == nil {
+						err = echoRoundTrip(c, payload)
+						_ = c.Close()
+					}
 					if err != nil {
+						failures.Add(1)
+						lastErr.Store(err.Error())
+						time.Sleep(5 * time.Millisecond)
 						continue
 					}
-					if echoRoundTrip(c, payload) == nil {
-						ops.Add(1)
-					}
-					_ = c.Close()
+					ops.Add(1)
 				}
 			}()
 		}
@@ -222,6 +228,9 @@ func perfConns(workers int) func(*perfRig) {
 		r.end(float64(n)/wall.Seconds(), "conn/s", float64(n)/1000, "kconn")
 		close(stop)
 		wg.Wait()
+		if n == 0 {
+			r.t.Errorf("no connection completed in the window (%d failures, last: %v)", failures.Load(), lastErr.Load())
+		}
 	}
 }
 
@@ -365,6 +374,7 @@ func perfScenarios() []perfScenario {
 
 func runPerfSample(t *testing.T, ps perfScenario, bin string, dur time.Duration) perfSample {
 	var out perfSample
+	waitTimeWaitDrained(t)
 	t.Run(filepathBase(bin), func(t *testing.T) {
 		pair := startTunnelPair(t, ps.Scn, bin, bin, "", nil)
 		rig := &perfRig{t: t, pair: pair, dur: dur}
@@ -479,3 +489,27 @@ func TestPerfCompare(t *testing.T) {
 }
 
 func numCPU() int { return runtime.GOMAXPROCS(0) }
+
+// waitTimeWaitDrained blocks until the host has few sockets in TIME_WAIT. Connection-churn
+// scenarios burn through the ephemeral port range, and the next sample would otherwise fail
+// to dial and report a bogus 0 conn/s.
+func waitTimeWaitDrained(t *testing.T) {
+	t.Helper()
+	const limit = 500
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		out, err := exec.Command("netstat", "-an").Output()
+		if err != nil {
+			return
+		}
+		n := strings.Count(string(out), "TIME_WAIT") + strings.Count(string(out), "TIME-WAIT")
+		if n <= limit {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Logf("proceeding with %d sockets still in TIME_WAIT", n)
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
