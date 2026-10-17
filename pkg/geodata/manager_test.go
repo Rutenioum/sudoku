@@ -35,10 +35,10 @@ import (
 func TestIsCN_HostPortMatchesDomainRules(t *testing.T) {
 	m := managerWithRules("DOMAIN,api.bilibili.com", "DOMAIN-SUFFIX,bilibili.com")
 
-	if ok, _ := m.MatchCN("www.bilibili.com:443", nil); !ok {
+	if ok, _ := m.MatchRuleOrLocal("www.bilibili.com:443", nil); !ok {
 		t.Fatalf("expected suffix domain match for host:port")
 	}
-	if ok, _ := m.MatchCN("api.bilibili.com:443", nil); !ok {
+	if ok, _ := m.MatchRuleOrLocal("api.bilibili.com:443", nil); !ok {
 		t.Fatalf("expected exact domain match for host:port")
 	}
 }
@@ -82,7 +82,7 @@ func TestIsCN_IPv6RuleMatch(t *testing.T) {
 	if ip == nil {
 		t.Fatalf("parse test ipv6 failed")
 	}
-	if ok, _ := m.MatchCN("video.example:443", ip); !ok {
+	if ok, _ := m.MatchRuleOrLocal("video.example:443", ip); !ok {
 		t.Fatalf("expected ipv6 rule match")
 	}
 }
@@ -94,8 +94,8 @@ func TestMatchRule_ExcludesImplicitLocalNetwork(t *testing.T) {
 		t.Fatalf("parse test ip failed")
 	}
 
-	if ok, match := m.MatchCN("192.168.1.10:80", ip); !ok || match.Kind != "LOCAL" {
-		t.Fatalf("expected implicit local MatchCN result, got %t %+v", ok, match)
+	if ok, match := m.MatchRuleOrLocal("192.168.1.10:80", ip); !ok || match.Kind != "LOCAL" {
+		t.Fatalf("expected implicit local MatchRuleOrLocal result, got %t %+v", ok, match)
 	}
 	if ok, match := m.MatchRule("192.168.1.10:80", ip); ok {
 		t.Fatalf("unexpected explicit rule match: %+v", match)
@@ -109,7 +109,7 @@ func TestParseRule_IPv6DoesNotPolluteIPv4Ranges(t *testing.T) {
 	if ipv4 == nil {
 		t.Fatalf("parse test ipv4 failed")
 	}
-	if ok, _ := m.MatchCN("36.112.0.1:443", ipv4); ok {
+	if ok, _ := m.MatchRuleOrLocal("36.112.0.1:443", ipv4); ok {
 		t.Fatalf("unexpected ipv4 match from ipv6-only rule")
 	}
 }
@@ -317,7 +317,7 @@ func TestDownloadRuleSource_RejectsOversizedResponse(t *testing.T) {
 func TestMatchCN_DomainKeywordRuleMatch(t *testing.T) {
 	m := managerWithRules("DOMAIN-KEYWORD,bilibili")
 
-	if ok, match := m.MatchCN("api.bilibili.com:443", nil); !ok {
+	if ok, match := m.MatchRuleOrLocal("api.bilibili.com:443", nil); !ok {
 		t.Fatalf("expected keyword domain match")
 	} else if match.Kind != "DOMAIN-KEYWORD" || match.Value != "bilibili" {
 		t.Fatalf("unexpected keyword match: %+v", match)
@@ -362,15 +362,15 @@ func TestUpdate_AppliesEachSourceIncrementally(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if ok, _ := m.MatchCN("www.first.cn:443", nil); ok {
+		if ok, _ := m.MatchRuleOrLocal("www.first.cn:443", nil); ok {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if ok, _ := m.MatchCN("www.first.cn:443", nil); !ok {
+	if ok, _ := m.MatchRuleOrLocal("www.first.cn:443", nil); !ok {
 		t.Fatalf("expected first source to be applied before second source completed")
 	}
-	if ok, _ := m.MatchCN("www.second.cn:443", nil); ok {
+	if ok, _ := m.MatchRuleOrLocal("www.second.cn:443", nil); ok {
 		t.Fatalf("second source should not be applied before its download completes")
 	}
 
@@ -382,7 +382,7 @@ func TestUpdate_AppliesEachSourceIncrementally(t *testing.T) {
 		t.Fatal("update did not finish")
 	}
 
-	if ok, _ := m.MatchCN("www.second.cn:443", nil); !ok {
+	if ok, _ := m.MatchRuleOrLocal("www.second.cn:443", nil); !ok {
 		t.Fatalf("expected second source to be applied after its download completed")
 	}
 }

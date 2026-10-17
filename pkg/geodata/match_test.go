@@ -111,7 +111,7 @@ func TestMatch(t *testing.T) {
 			for _, entry := range []struct {
 				fn   string
 				call func(string, net.IP) (bool, Match)
-			}{{"MatchRule", m.MatchRule}, {"MatchCN", m.MatchCN}} {
+			}{{"MatchRule", m.MatchRule}, {"MatchRuleOrLocal", m.MatchRuleOrLocal}} {
 				ok, got := entry.call(tc.host, ip)
 				if ok != (tc.wantKind != "") || got.Kind != tc.wantKind || got.Value != tc.wantValue {
 					t.Errorf("%s(%q, %v) = %v %+v, want kind=%q value=%q", entry.fn, tc.host, tc.ip, ok, got, tc.wantKind, tc.wantValue)
@@ -156,23 +156,23 @@ func TestMatchLocalNetwork(t *testing.T) {
 		if ip == nil {
 			t.Fatalf("bad test ip %q", tc.ip)
 		}
-		ok, got := m.MatchCN("", ip)
+		ok, got := m.MatchRuleOrLocal("", ip)
 		if tc.local {
 			if !ok || got.Kind != "LOCAL" || got.Value != "" {
-				t.Errorf("MatchCN(%s) = %v %+v, want LOCAL", tc.ip, ok, got)
+				t.Errorf("MatchRuleOrLocal(%s) = %v %+v, want LOCAL", tc.ip, ok, got)
 			}
 		} else if got.Kind == "LOCAL" {
-			t.Errorf("MatchCN(%s) reported LOCAL", tc.ip)
+			t.Errorf("MatchRuleOrLocal(%s) reported LOCAL", tc.ip)
 		}
 		if ok, got := m.MatchRule("", ip); got.Kind == "LOCAL" {
 			t.Errorf("MatchRule(%s) = %v %+v, must never report LOCAL", tc.ip, ok, got)
 		}
 	}
 
-	t.Run("local takes precedence over domain rules for MatchCN only", func(t *testing.T) {
+	t.Run("local takes precedence over domain rules for MatchRuleOrLocal only", func(t *testing.T) {
 		ip := net.ParseIP("10.1.2.3")
-		if ok, got := m.MatchCN("exact.example", ip); !ok || got.Kind != "LOCAL" {
-			t.Errorf("MatchCN = %v %+v, want LOCAL", ok, got)
+		if ok, got := m.MatchRuleOrLocal("exact.example", ip); !ok || got.Kind != "LOCAL" {
+			t.Errorf("MatchRuleOrLocal = %v %+v, want LOCAL", ok, got)
 		}
 		if ok, got := m.MatchRule("exact.example", ip); !ok || got.Kind != "DOMAIN" {
 			t.Errorf("MatchRule = %v %+v, want DOMAIN", ok, got)
@@ -180,8 +180,8 @@ func TestMatchLocalNetwork(t *testing.T) {
 	})
 
 	t.Run("nil ip is never local", func(t *testing.T) {
-		if ok, got := m.MatchCN("", nil); ok {
-			t.Errorf("MatchCN(nil) = %+v", got)
+		if ok, got := m.MatchRuleOrLocal("", nil); ok {
+			t.Errorf("MatchRuleOrLocal(nil) = %+v", got)
 		}
 	})
 }

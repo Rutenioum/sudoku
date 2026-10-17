@@ -106,7 +106,7 @@ func (m *routeManagers) match(action routeAction, destAddr string, destIP net.IP
 	switch action {
 	case routeActionDirect:
 		if m.direct != nil {
-			hit, rule = m.direct.MatchCN(destAddr, destIP)
+			hit, rule = m.direct.MatchRuleOrLocal(destAddr, destIP)
 		}
 	case routeActionProxy:
 		if m.proxy != nil {

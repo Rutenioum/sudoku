@@ -41,12 +41,15 @@ func (m Match) String() string {
 	return fmt.Sprintf("%s(%s)", m.Kind, m.Value)
 }
 
-func (m *Manager) MatchCN(host string, ip net.IP) (bool, Match) {
-	return m.match(host, ip, true)
-}
-
+// MatchRule reports whether host or ip hits a loaded rule.
 func (m *Manager) MatchRule(host string, ip net.IP) (bool, Match) {
 	return m.match(host, ip, false)
+}
+
+// MatchRuleOrLocal is MatchRule that also reports loopback, private and link-local addresses
+// as a "LOCAL" hit, for rule sets that mean "never proxy this" (the direct list).
+func (m *Manager) MatchRuleOrLocal(host string, ip net.IP) (bool, Match) {
+	return m.match(host, ip, true)
 }
 
 func (m *Manager) match(host string, ip net.IP, includeLocal bool) (bool, Match) {
