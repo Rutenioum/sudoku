@@ -33,10 +33,7 @@ import (
 )
 
 func TestIsCN_HostPortMatchesDomainRules(t *testing.T) {
-	m := &Manager{
-		domainExact:  map[string]struct{}{"api.bilibili.com": {}},
-		domainSuffix: map[string]struct{}{"bilibili.com": {}},
-	}
+	m := managerWithRules("DOMAIN,api.bilibili.com", "DOMAIN-SUFFIX,bilibili.com")
 
 	if ok, _ := m.MatchCN("www.bilibili.com:443", nil); !ok {
 		t.Fatalf("expected suffix domain match for host:port")
@@ -47,11 +44,7 @@ func TestIsCN_HostPortMatchesDomainRules(t *testing.T) {
 }
 
 func TestParseRule_NormalizesDomainEntries(t *testing.T) {
-	state := &ruleBuildState{
-		exact:   make(map[string]struct{}),
-		keyword: make(map[string]struct{}),
-		suffix:  make(map[string]struct{}),
-	}
+	state := newRuleBuildState()
 
 	parseRule("DOMAIN, API.BiliBili.Com.", state)
 	parseRule("DOMAIN-KEYWORD,BiliBili", state)
@@ -69,11 +62,7 @@ func TestParseRule_NormalizesDomainEntries(t *testing.T) {
 }
 
 func TestParseRule_AcceptsBareDomainEntries(t *testing.T) {
-	state := &ruleBuildState{
-		exact:   make(map[string]struct{}),
-		keyword: make(map[string]struct{}),
-		suffix:  make(map[string]struct{}),
-	}
+	state := newRuleBuildState()
 
 	parseRule("'ad.qq.com'", state)
 	parseRule("+.ads.example.com", state)
@@ -87,19 +76,7 @@ func TestParseRule_AcceptsBareDomainEntries(t *testing.T) {
 }
 
 func TestIsCN_IPv6RuleMatch(t *testing.T) {
-	m := &Manager{
-		domainExact:  make(map[string]struct{}),
-		domainSuffix: make(map[string]struct{}),
-	}
-	state := &ruleBuildState{
-		exact:   make(map[string]struct{}),
-		keyword: make(map[string]struct{}),
-		suffix:  make(map[string]struct{}),
-	}
-
-	parseRule("IP-CIDR6,2400:3200::/32", state)
-	m.ipRanges = mergeRanges(state.ipv4)
-	m.ipv6Ranges = mergeIPv6Ranges(state.ipv6)
+	m := managerWithRules("IP-CIDR6,2400:3200::/32")
 
 	ip := net.ParseIP("2400:3200::1234")
 	if ip == nil {
@@ -111,10 +88,7 @@ func TestIsCN_IPv6RuleMatch(t *testing.T) {
 }
 
 func TestMatchRule_ExcludesImplicitLocalNetwork(t *testing.T) {
-	m := &Manager{
-		domainExact:  make(map[string]struct{}),
-		domainSuffix: make(map[string]struct{}),
-	}
+	m := managerWithRules()
 	ip := net.ParseIP("192.168.1.10")
 	if ip == nil {
 		t.Fatalf("parse test ip failed")
@@ -129,19 +103,7 @@ func TestMatchRule_ExcludesImplicitLocalNetwork(t *testing.T) {
 }
 
 func TestParseRule_IPv6DoesNotPolluteIPv4Ranges(t *testing.T) {
-	m := &Manager{
-		domainExact:  make(map[string]struct{}),
-		domainSuffix: make(map[string]struct{}),
-	}
-	state := &ruleBuildState{
-		exact:   make(map[string]struct{}),
-		keyword: make(map[string]struct{}),
-		suffix:  make(map[string]struct{}),
-	}
-
-	parseRule("IP-CIDR6,2400:3200::/32", state)
-	m.ipRanges = mergeRanges(state.ipv4)
-	m.ipv6Ranges = mergeIPv6Ranges(state.ipv6)
+	m := managerWithRules("IP-CIDR6,2400:3200::/32")
 
 	ipv4 := net.ParseIP("36.112.0.1")
 	if ipv4 == nil {
@@ -187,11 +149,7 @@ func TestDownloadAndParse_UsesRuleDownloadClient(t *testing.T) {
 		}
 	}
 
-	state := &ruleBuildState{
-		exact:   make(map[string]struct{}),
-		keyword: make(map[string]struct{}),
-		suffix:  make(map[string]struct{}),
-	}
+	state := newRuleBuildState()
 	m := &Manager{}
 	m.downloadAndParse("http://resolver.test:"+serverPort+"/rules", state)
 
@@ -206,11 +164,7 @@ func TestDownloadAndParse_YAMLBareDomains(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	state := &ruleBuildState{
-		exact:   make(map[string]struct{}),
-		keyword: make(map[string]struct{}),
-		suffix:  make(map[string]struct{}),
-	}
+	state := newRuleBuildState()
 	m := &Manager{}
 	if !m.downloadAndParse(srv.URL, state) {
 		t.Fatalf("expected downloadAndParse to succeed")
@@ -346,12 +300,22 @@ func TestDownloadAndParse_RejectsInvalidCache(t *testing.T) {
 	}
 }
 
-func TestMatchCN_DomainKeywordRuleMatch(t *testing.T) {
-	m := &Manager{
-		domainExact:   make(map[string]struct{}),
-		domainKeyword: map[string]struct{}{"bilibili": {}},
-		domainSuffix:  make(map[string]struct{}),
+func TestDownloadRuleSource_RejectsOversizedResponse(t *testing.T) {
+	line := []byte("DOMAIN,a.example\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for written := 0; written <= maxRuleSourceBytes; written += len(line) {
+			_, _ = w.Write(line)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	if body, err := downloadRuleSource(srv.URL); err == nil {
+		t.Fatalf("oversized response accepted (%d bytes)", len(body))
 	}
+}
+
+func TestMatchCN_DomainKeywordRuleMatch(t *testing.T) {
+	m := managerWithRules("DOMAIN-KEYWORD,bilibili")
 
 	if ok, match := m.MatchCN("api.bilibili.com:443", nil); !ok {
 		t.Fatalf("expected keyword domain match")

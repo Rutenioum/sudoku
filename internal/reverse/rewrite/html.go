@@ -17,13 +17,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 In addition, no derivative work may use the name or imply association
 with this application without prior consent.
 */
-package reverse
-
-import "bytes"
+package rewrite
 
 // rewriteHTMLRootAbsolutePaths rewrites root-absolute URLs in HTML while keeping inline scripts intact.
 func rewriteHTMLRootAbsolutePaths(in []byte, prefix string) []byte {
-	if len(in) == 0 || normalizedPrefixBytes(prefix) == nil {
+	p := normalizedPrefixBytes(prefix)
+	if len(in) == 0 || p == nil {
 		return in
 	}
 
@@ -32,13 +31,9 @@ func rewriteHTMLRootAbsolutePaths(in []byte, prefix string) []byte {
 		return rewriteRootAbsolutePaths(in, prefix)
 	}
 
-	var (
-		out      bytes.Buffer
-		last     int
-		modified bool
-	)
-	out.Grow(len(in) + len(in)/16)
-
+	// Script bodies are copied untouched; only the markup around them is rewritten.
+	s := splicer{src: in}
+	last := 0
 	for open >= 0 {
 		tagEnd := findHTMLTagEnd(in, open)
 		if tagEnd < 0 {
@@ -51,30 +46,12 @@ func rewriteHTMLRootAbsolutePaths(in []byte, prefix string) []byte {
 			return rewriteRootAbsolutePaths(in, prefix)
 		}
 
-		before := in[last:contentStart]
-		beforeRewritten := rewriteRootAbsolutePaths(before, prefix)
-		if !bytes.Equal(before, beforeRewritten) {
-			modified = true
-		}
-		out.Write(beforeRewritten)
-
-		out.Write(in[contentStart:close])
-
+		s.prefixRootAbsolute(last, contentStart, p)
 		last = close
 		open = indexHTMLScriptOpen(in, last)
 	}
-
-	tail := in[last:]
-	tailRewritten := rewriteRootAbsolutePaths(tail, prefix)
-	if !bytes.Equal(tail, tailRewritten) {
-		modified = true
-	}
-	out.Write(tailRewritten)
-
-	if !modified {
-		return in
-	}
-	return out.Bytes()
+	s.prefixRootAbsolute(last, len(in), p)
+	return s.bytes()
 }
 
 func indexHTMLScriptOpen(in []byte, from int) int {

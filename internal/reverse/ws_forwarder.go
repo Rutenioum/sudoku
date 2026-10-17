@@ -49,7 +49,7 @@ func ServeLocalWSForward(listenAddr, dialURL string, insecure bool) error {
 	}
 
 	u, err := url.Parse(dialURL)
-	if err != nil || u == nil {
+	if err != nil {
 		return fmt.Errorf("invalid dial url: %q", dialURL)
 	}
 	switch strings.ToLower(u.Scheme) {
@@ -87,9 +87,6 @@ func ServeLocalWSForward(listenAddr, dialURL string, insecure bool) error {
 		}
 
 		go func(local net.Conn) {
-			if local == nil {
-				return
-			}
 			defer local.Close()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
