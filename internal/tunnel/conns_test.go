@@ -78,8 +78,8 @@ func TestBufferedConn_GetBufferedAndRecorded(t *testing.T) {
 	testData := []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
 	mockConn := newMockConn(testData)
 
-	// Create BufferedConn with recording enabled
-	bc := &BufferedConn{
+	// Create bufferedConn with recording enabled
+	bc := &bufferedConn{
 		Conn:     mockConn,
 		r:        bufio.NewReader(mockConn),
 		recorder: new(bytes.Buffer),
@@ -117,8 +117,8 @@ func TestBufferedConn_GetBufferedAndRecorded_NoRecorder(t *testing.T) {
 	testData := []byte("Some data")
 	mockConn := newMockConn(testData)
 
-	// Create BufferedConn WITHOUT recording
-	bc := &BufferedConn{
+	// Create bufferedConn WITHOUT recording
+	bc := &bufferedConn{
 		Conn: mockConn,
 		r:    bufio.NewReader(mockConn),
 		// recorder is nil
@@ -144,7 +144,7 @@ func TestBufferedConn_GetBufferedAndRecorded_AfterFullRead(t *testing.T) {
 	testData := []byte("Short")
 	mockConn := newMockConn(testData)
 
-	bc := &BufferedConn{
+	bc := &bufferedConn{
 		Conn:     mockConn,
 		r:        bufio.NewReader(mockConn),
 		recorder: new(bytes.Buffer),

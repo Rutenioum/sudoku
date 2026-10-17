@@ -25,7 +25,7 @@ type EarlyCodecConfig struct {
 	WireWrap func(userHash string, raw net.Conn) net.Conn
 }
 
-type EarlyClientState struct {
+type earlyClientState struct {
 	RequestPayload []byte
 
 	cfg         EarlyCodecConfig
@@ -37,13 +37,13 @@ type EarlyClientState struct {
 	responseSet bool
 }
 
-type EarlyServerState struct {
+type earlyServerState struct {
 	ResponsePayload []byte
 	UserHash        string
 
 	cfg        EarlyCodecConfig
 	table      *sudoku.Table
-	uplinkMode ObfsUplinkMode
+	uplinkMode obfsUplinkMode
 	sessionC2S []byte
 	sessionS2C []byte
 }
@@ -85,19 +85,19 @@ func (a earlyDummyAddr) Network() string { return string(a) }
 func (a earlyDummyAddr) String() string  { return string(a) }
 
 func buildEarlyClientObfsConn(raw net.Conn, cfg EarlyCodecConfig, table *sudoku.Table) net.Conn {
-	uplinkMode := ObfsUplinkPure
+	uplinkMode := obfsUplinkPure
 	if cfg.PackedUplink {
-		uplinkMode = ObfsUplinkPacked
+		uplinkMode = obfsUplinkPacked
 	}
 	return buildClientObfsConnForMode(raw, table, cfg.PaddingMin, cfg.PaddingMax, cfg.EnablePureDownlink, uplinkMode)
 }
 
-func buildEarlyServerObfsConn(raw net.Conn, cfg EarlyCodecConfig, table *sudoku.Table, uplinkMode ObfsUplinkMode) net.Conn {
+func buildEarlyServerObfsConn(raw net.Conn, cfg EarlyCodecConfig, table *sudoku.Table, uplinkMode obfsUplinkMode) net.Conn {
 	_, conn := buildServerObfsConnForMode(raw, table, cfg.PaddingMin, cfg.PaddingMax, cfg.EnablePureDownlink, uplinkMode, false)
 	return conn
 }
 
-func NewEarlyClientState(cfg EarlyCodecConfig, table *sudoku.Table, tableHint uint32, hasTableHint bool, userHash [kipHelloUserHashSize]byte, feats uint32) (*EarlyClientState, error) {
+func newEarlyClientState(cfg EarlyCodecConfig, table *sudoku.Table, tableHint uint32, hasTableHint bool, userHash [kipHelloUserHashSize]byte, feats uint32) (*earlyClientState, error) {
 	if table == nil {
 		return nil, fmt.Errorf("nil table")
 	}
@@ -118,7 +118,7 @@ func NewEarlyClientState(cfg EarlyCodecConfig, table *sudoku.Table, tableHint ui
 		return nil, fmt.Errorf("write early client hello failed: %w", err)
 	}
 
-	return &EarlyClientState{
+	return &earlyClientState{
 		RequestPayload: mem.Written(),
 		cfg:            cfg,
 		table:          table,
@@ -127,7 +127,7 @@ func NewEarlyClientState(cfg EarlyCodecConfig, table *sudoku.Table, tableHint ui
 	}, nil
 }
 
-func (s *EarlyClientState) ProcessResponse(payload []byte) error {
+func (s *earlyClientState) ProcessResponse(payload []byte) error {
 	if s == nil {
 		return fmt.Errorf("nil client state")
 	}
@@ -151,7 +151,7 @@ func (s *EarlyClientState) ProcessResponse(payload []byte) error {
 	return nil
 }
 
-func (s *EarlyClientState) WrapConn(raw net.Conn) (net.Conn, error) {
+func (s *earlyClientState) WrapConn(raw net.Conn) (net.Conn, error) {
 	if s == nil {
 		return nil, fmt.Errorf("nil client state")
 	}
@@ -166,12 +166,12 @@ func (s *EarlyClientState) WrapConn(raw net.Conn) (net.Conn, error) {
 	return rc, nil
 }
 
-func (s *EarlyClientState) Ready() bool {
+func (s *earlyClientState) Ready() bool {
 	return s != nil && s.responseSet
 }
 
 func NewHTTPMaskClientEarlyHandshake(cfg EarlyCodecConfig, table *sudoku.Table, tableHint uint32, hasTableHint bool, userHash [kipHelloUserHashSize]byte, feats uint32) (*httpmask.ClientEarlyHandshake, error) {
-	state, err := NewEarlyClientState(cfg, table, tableHint, hasTableHint, userHash, feats)
+	state, err := newEarlyClientState(cfg, table, tableHint, hasTableHint, userHash, feats)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +183,7 @@ func NewHTTPMaskClientEarlyHandshake(cfg EarlyCodecConfig, table *sudoku.Table, 
 	}, nil
 }
 
-func ProcessEarlyClientPayload(cfg EarlyCodecConfig, tables []*sudoku.Table, payload []byte, allowReplay ReplayAllowFunc) (*EarlyServerState, error) {
+func ProcessEarlyClientPayload(cfg EarlyCodecConfig, tables []*sudoku.Table, payload []byte, allowReplay ReplayAllowFunc) (*earlyServerState, error) {
 	if len(payload) == 0 {
 		return nil, fmt.Errorf("empty early payload")
 	}
@@ -193,7 +193,7 @@ func ProcessEarlyClientPayload(cfg EarlyCodecConfig, tables []*sudoku.Table, pay
 
 	var firstErr error
 	for _, table := range tables {
-		for _, uplinkMode := range []ObfsUplinkMode{ObfsUplinkPure, ObfsUplinkPacked} {
+		for _, uplinkMode := range []obfsUplinkMode{obfsUplinkPure, obfsUplinkPacked} {
 			state, err := processEarlyClientPayloadForTable(cfg, tables, table, uplinkMode, payload, allowReplay)
 			if err == nil {
 				return state, nil
@@ -209,7 +209,7 @@ func ProcessEarlyClientPayload(cfg EarlyCodecConfig, tables []*sudoku.Table, pay
 	return nil, firstErr
 }
 
-func processEarlyClientPayloadForTable(cfg EarlyCodecConfig, tables []*sudoku.Table, table *sudoku.Table, uplinkMode ObfsUplinkMode, payload []byte, allowReplay ReplayAllowFunc) (*EarlyServerState, error) {
+func processEarlyClientPayloadForTable(cfg EarlyCodecConfig, tables []*sudoku.Table, table *sudoku.Table, uplinkMode obfsUplinkMode, payload []byte, allowReplay ReplayAllowFunc) (*earlyServerState, error) {
 	mem := newEarlyMemoryConn(payload)
 	obfsConn := buildEarlyServerObfsConn(mem, cfg, table, uplinkMode)
 	pskC2S, pskS2C := derivePSKDirectionalBases(cfg.PSK)
@@ -237,7 +237,7 @@ func processEarlyClientPayloadForTable(cfg EarlyCodecConfig, tables []*sudoku.Ta
 		return nil, fmt.Errorf("write early server hello failed: %w", err)
 	}
 
-	return &EarlyServerState{
+	return &earlyServerState{
 		ResponsePayload: respMem.Written(),
 		UserHash:        accepted.userHash,
 		cfg:             cfg,
@@ -248,7 +248,7 @@ func processEarlyClientPayloadForTable(cfg EarlyCodecConfig, tables []*sudoku.Ta
 	}, nil
 }
 
-func (s *EarlyServerState) WrapConn(raw net.Conn) (net.Conn, error) {
+func (s *earlyServerState) WrapConn(raw net.Conn) (net.Conn, error) {
 	if s == nil {
 		return nil, fmt.Errorf("nil server state")
 	}
@@ -260,7 +260,7 @@ func (s *EarlyServerState) WrapConn(raw net.Conn) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("setup server session crypto failed: %w", err)
 	}
-	return WrapConnWithObfsMeta(rc, s.uplinkMode), nil
+	return wrapConnWithObfsMeta(rc, s.uplinkMode), nil
 }
 
 func NewHTTPMaskServerEarlyHandshake(cfg EarlyCodecConfig, tables []*sudoku.Table, allowReplay ReplayAllowFunc) *httpmask.TunnelServerEarlyHandshake {

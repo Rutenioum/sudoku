@@ -32,7 +32,7 @@ func TestObfsMetaPreservesRecordWriteBuffers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wrapped := WrapConnWithObfsMeta(record, ObfsUplinkPacked)
+			wrapped := wrapConnWithObfsMeta(record, obfsUplinkPacked)
 			buffers := net.Buffers{[]byte("header"), []byte("payload")}
 			n, err := connutil.WriteBuffers(wrapped, buffers)
 			if n != 13 || err != nil {

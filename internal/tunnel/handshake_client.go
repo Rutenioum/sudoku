@@ -28,7 +28,7 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
-func KIPHandshakeClient(rc *crypto.RecordConn, seed string, userHash [kipHelloUserHashSize]byte, feats uint32, tableHint uint32, hasTableHint bool) (selectedFeats uint32, err error) {
+func clientHandshake(rc *crypto.RecordConn, seed string, userHash [kipHelloUserHashSize]byte, feats uint32, tableHint uint32, hasTableHint bool) (selectedFeats uint32, err error) {
 	if rc == nil {
 		return 0, fmt.Errorf("nil conn")
 	}
@@ -53,7 +53,7 @@ func KIPHandshakeClient(rc *crypto.RecordConn, seed string, userHash [kipHelloUs
 	return sh.SelectedFeats, nil
 }
 
-func ClientHandshakeWithUplinkMode(conn net.Conn, cfg *config.Config, table *sudoku.Table, privateKey []byte, uplinkMode ObfsUplinkMode, tableHint uint32, hasTableHint bool) (net.Conn, error) {
+func ClientHandshakeWithUplinkMode(conn net.Conn, cfg *config.Config, table *sudoku.Table, privateKey []byte, uplinkMode obfsUplinkMode, tableHint uint32, hasTableHint bool) (net.Conn, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("nil config")
 	}
@@ -62,7 +62,7 @@ func ClientHandshakeWithUplinkMode(conn net.Conn, cfg *config.Config, table *sud
 	}
 	var obfsConn net.Conn
 	switch uplinkMode {
-	case ObfsUplinkPacked:
+	case obfsUplinkPacked:
 		obfsConn = buildReverseObfsConnForClient(conn, table, cfg)
 	default:
 		obfsConn = buildObfsConnForClient(conn, table, cfg)
@@ -75,7 +75,7 @@ func ClientHandshakeWithUplinkMode(conn net.Conn, cfg *config.Config, table *sud
 	}
 
 	userHash := kipUserHashFromPrivateKey(privateKey, cfg.Key)
-	if _, err := KIPHandshakeClient(rc, cfg.Key, userHash, KIPFeatAll, tableHint, hasTableHint); err != nil {
+	if _, err := clientHandshake(rc, cfg.Key, userHash, KIPFeatAll, tableHint, hasTableHint); err != nil {
 		_ = rc.Close()
 		return nil, err
 	}

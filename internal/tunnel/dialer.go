@@ -48,15 +48,15 @@ type BaseDialer struct {
 // DialBase establishes a Sudoku tunnel connection to the configured server,
 // performing the handshake but not requesting any target address.
 func (d *BaseDialer) DialBase() (net.Conn, error) {
-	return d.dial(context.Background(), ObfsUplinkPure)
+	return d.dial(context.Background(), obfsUplinkPure)
 }
 
 // DialReverseBase establishes a reverse-session tunnel using packed uplink on the client side.
 func (d *BaseDialer) DialReverseBase() (net.Conn, error) {
-	return d.dial(context.Background(), ObfsUplinkPacked)
+	return d.dial(context.Background(), obfsUplinkPacked)
 }
 
-func (d *BaseDialer) dialHTTPMaskTunnel(dialCtx context.Context, table *sudoku.Table, tableHint uint32, hasTableHint bool, uplinkMode ObfsUplinkMode, upgrade func(net.Conn) (net.Conn, error)) (net.Conn, error) {
+func (d *BaseDialer) dialHTTPMaskTunnel(dialCtx context.Context, table *sudoku.Table, tableHint uint32, hasTableHint bool, uplinkMode obfsUplinkMode, upgrade func(net.Conn) (net.Conn, error)) (net.Conn, error) {
 	if d.Config == nil {
 		return nil, fmt.Errorf("missing config")
 	}
@@ -66,7 +66,7 @@ func (d *BaseDialer) dialHTTPMaskTunnel(dialCtx context.Context, table *sudoku.T
 		EnablePureDownlink: d.Config.EnablePureDownlink,
 		PaddingMin:         d.Config.PaddingMin,
 		PaddingMax:         d.Config.PaddingMax,
-		PackedUplink:       uplinkMode == ObfsUplinkPacked,
+		PackedUplink:       uplinkMode == obfsUplinkPacked,
 	}, table, tableHint, hasTableHint, kipUserHashFromPrivateKey(d.PrivateKey, d.Config.Key), KIPFeatAll)
 	if err != nil {
 		return nil, err
@@ -102,7 +102,7 @@ func (d *BaseDialer) pickTable() (*sudoku.Table, uint32, bool, error) {
 	return d.Tables[idx], d.Tables[idx].Hint(), true, nil
 }
 
-func (d *BaseDialer) dial(ctx context.Context, uplinkMode ObfsUplinkMode) (net.Conn, error) {
+func (d *BaseDialer) dial(ctx context.Context, uplinkMode obfsUplinkMode) (net.Conn, error) {
 	if d.Config == nil {
 		return nil, fmt.Errorf("missing config")
 	}

@@ -35,8 +35,8 @@ var errProbeMismatch = errors.New("probe mismatch")
 // probeAcceptingAfter asks every candidate for more bytes until minLen are available, then accepts
 // only (want, wantMode). A candidate that is rejected earlier would leave a sole survivor, which
 // the selector accepts without waiting for more bytes.
-func probeAcceptingAfter(want *sudoku.Table, wantMode ObfsUplinkMode, minLen int) HandshakeObfsProbeFunc {
-	return func(probe []byte, table *sudoku.Table, mode ObfsUplinkMode) error {
+func probeAcceptingAfter(want *sudoku.Table, wantMode obfsUplinkMode, minLen int) HandshakeObfsProbeFunc {
+	return func(probe []byte, table *sudoku.Table, mode obfsUplinkMode) error {
 		if len(probe) < minLen {
 			return io.ErrUnexpectedEOF
 		}
@@ -67,7 +67,7 @@ func TestSelectHandshakeObfsByProbe(t *testing.T) {
 			br := bufio.NewReader(tc.reader)
 			_, _ = br.Peek(1)
 
-			sel, probed, err := SelectHandshakeObfsByProbe(br, tables, probeAcceptingAfter(tableB, ObfsUplinkPacked, tc.minLen))
+			sel, probed, err := SelectHandshakeObfsByProbe(br, tables, probeAcceptingAfter(tableB, obfsUplinkPacked, tc.minLen))
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected an error")
@@ -77,7 +77,7 @@ func TestSelectHandshakeObfsByProbe(t *testing.T) {
 			if err != nil {
 				t.Fatalf("select failed: %v", err)
 			}
-			if sel.Table != tableB || sel.UplinkMode != ObfsUplinkPacked {
+			if sel.Table != tableB || sel.UplinkMode != obfsUplinkPacked {
 				t.Fatalf("selected wrong candidate: %+v", sel)
 			}
 			if len(probed) < tc.minLen || !bytes.HasPrefix(data, probed) {
@@ -89,7 +89,7 @@ func TestSelectHandshakeObfsByProbe(t *testing.T) {
 
 func TestSelectHandshakeObfsByProbeRejectsEmptyCandidates(t *testing.T) {
 	br := bufio.NewReader(bytes.NewReader([]byte{1}))
-	if _, _, err := SelectHandshakeObfsByProbe(br, []*sudoku.Table{nil}, probeAcceptingAfter(nil, ObfsUplinkPure, 0)); err == nil {
+	if _, _, err := SelectHandshakeObfsByProbe(br, []*sudoku.Table{nil}, probeAcceptingAfter(nil, obfsUplinkPure, 0)); err == nil {
 		t.Fatal("expected an error without candidates")
 	}
 }
@@ -99,7 +99,7 @@ func BenchmarkSelectHandshakeObfsByProbe(b *testing.B) {
 	table := &sudoku.Table{}
 	tables := []*sudoku.Table{table}
 	data := bytes.Repeat([]byte{0xA5}, 256)
-	probe := probeAcceptingAfter(table, ObfsUplinkPacked, len(data))
+	probe := probeAcceptingAfter(table, obfsUplinkPacked, len(data))
 
 	src := bytes.NewReader(data)
 	br := bufio.NewReader(src)

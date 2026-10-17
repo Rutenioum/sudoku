@@ -35,7 +35,7 @@ import (
 )
 
 const (
-	HandshakeTimeout = 5 * time.Second
+	handshakeTimeout = 5 * time.Second
 )
 
 // SuspiciousError indicates a potential attack or protocol violation
@@ -60,7 +60,7 @@ type HandshakeMeta struct {
 	UplinkPacked bool
 }
 
-func probeHandshakeBytes(probe []byte, cfg *config.Config, table *sudoku.Table, uplinkMode ObfsUplinkMode) error {
+func probeHandshakeBytes(probe []byte, cfg *config.Config, table *sudoku.Table, uplinkMode obfsUplinkMode) error {
 	rc := &connutil.ReadOnlyConn{Reader: bytes.NewReader(probe)}
 	_, obfsConn := buildObfsConnForServer(rc, table, cfg, uplinkMode, false)
 	pskC2S, pskS2C := derivePSKDirectionalBases(cfg.Key)
@@ -93,7 +93,7 @@ func HandshakeAndUpgradeWithTablesMeta(rawConn net.Conn, cfg *config.Config, tab
 
 	// 0) Byte-level prelude handling (legacy HTTP mask + buffered probe bytes).
 	bufReader := bufio.NewReader(rawConn)
-	_ = rawConn.SetReadDeadline(time.Now().Add(HandshakeTimeout))
+	_ = rawConn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	defer func() { _ = rawConn.SetReadDeadline(time.Time{}) }()
 
 	httpHeaderData, susp := maybeConsumeLegacyHTTPMask(rawConn, bufReader, cfg)
@@ -102,7 +102,7 @@ func HandshakeAndUpgradeWithTablesMeta(rawConn net.Conn, cfg *config.Config, tab
 	}
 
 	// 1. Sudoku Layer
-	selected, preRead, err := SelectHandshakeObfsByProbe(bufReader, tables, func(probe []byte, table *sudoku.Table, uplinkMode ObfsUplinkMode) error {
+	selected, preRead, err := SelectHandshakeObfsByProbe(bufReader, tables, func(probe []byte, table *sudoku.Table, uplinkMode obfsUplinkMode) error {
 		return probeHandshakeBytes(probe, cfg, table, uplinkMode)
 	})
 	if err != nil {
@@ -128,7 +128,7 @@ func HandshakeAndUpgradeWithTablesMeta(rawConn net.Conn, cfg *config.Config, tab
 	}
 
 	// 3. Handshake
-	_ = rawConn.SetReadDeadline(time.Now().Add(HandshakeTimeout))
+	_ = rawConn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	ch, err := readClientHello(cConn)
 	if err != nil {
 		return fail(err)
@@ -139,7 +139,7 @@ func HandshakeAndUpgradeWithTablesMeta(rawConn net.Conn, cfg *config.Config, tab
 	}
 	if accepted.table != selected.Table {
 		downlink, closers := sudoku.NewServerDownlinkWriter(baseConn, accepted.table.OppositeDirection(), cfg.PaddingMin, cfg.PaddingMax, cfg.EnablePureDownlink)
-		if !SwitchConnDownlinkWriter(obfsConn, downlink, closers...) {
+		if !switchConnDownlinkWriter(obfsConn, downlink, closers...) {
 			return fail(errors.New("switch downlink writer failed"))
 		}
 	}
@@ -154,8 +154,8 @@ func HandshakeAndUpgradeWithTablesMeta(rawConn net.Conn, cfg *config.Config, tab
 	}
 
 	sConn.StopRecording()
-	meta := &HandshakeMeta{UserHash: accepted.userHash, UplinkPacked: selected.UplinkMode == ObfsUplinkPacked}
-	return WrapConnWithObfsMeta(cConn, selected.UplinkMode), meta, nil
+	meta := &HandshakeMeta{UserHash: accepted.userHash, UplinkPacked: selected.UplinkMode == obfsUplinkPacked}
+	return wrapConnWithObfsMeta(cConn, selected.UplinkMode), meta, nil
 }
 
 func maybeConsumeLegacyHTTPMask(rawConn net.Conn, r *bufio.Reader, cfg *config.Config) ([]byte, *SuspiciousError) {
@@ -173,12 +173,12 @@ func maybeConsumeLegacyHTTPMask(rawConn net.Conn, r *bufio.Reader, cfg *config.C
 		return consumed, nil
 	}
 
-	// Return rawConn wrapped in BufferedConn so caller can handle fallback.
+	// Return rawConn wrapped in bufferedConn so caller can handle fallback.
 	recorder := new(bytes.Buffer)
 	if len(consumed) > 0 {
 		recorder.Write(consumed)
 	}
-	badConn := &BufferedConn{
+	badConn := &bufferedConn{
 		Conn:     rawConn,
 		r:        r,
 		recorder: recorder,

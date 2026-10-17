@@ -29,29 +29,29 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 )
 
-// BufferedConn wraps net.Conn and bufio.Reader
-type BufferedConn struct {
+// bufferedConn wraps net.Conn and bufio.Reader
+type bufferedConn struct {
 	net.Conn
 	r          *bufio.Reader
 	recorder   *bytes.Buffer
 	recordLock sync.Mutex
 }
 
-func (bc *BufferedConn) CloseWrite() error {
+func (bc *bufferedConn) CloseWrite() error {
 	if bc == nil {
 		return nil
 	}
 	return connutil.TryCloseWrite(bc.Conn)
 }
 
-func (bc *BufferedConn) CloseRead() error {
+func (bc *bufferedConn) CloseRead() error {
 	if bc == nil {
 		return nil
 	}
 	return connutil.TryCloseRead(bc.Conn)
 }
 
-func (bc *BufferedConn) Read(p []byte) (n int, err error) {
+func (bc *bufferedConn) Read(p []byte) (n int, err error) {
 	n, err = bc.r.Read(p)
 	if n > 0 && bc.recorder != nil {
 		bc.recordLock.Lock()
@@ -61,20 +61,20 @@ func (bc *BufferedConn) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
-// PreBufferedConn for Split detection peek
-type PreBufferedConn struct {
+// preBufferedConn for Split detection peek
+type preBufferedConn struct {
 	net.Conn
 	buf []byte
 }
 
-func (p *PreBufferedConn) CloseWrite() error {
+func (p *preBufferedConn) CloseWrite() error {
 	if p == nil {
 		return nil
 	}
 	return connutil.TryCloseWrite(p.Conn)
 }
 
-func (p *PreBufferedConn) CloseRead() error {
+func (p *preBufferedConn) CloseRead() error {
 	if p == nil {
 		return nil
 	}
@@ -83,10 +83,10 @@ func (p *PreBufferedConn) CloseRead() error {
 
 // NewPreBufferedConn replays the provided bytes before reading from the underlying connection.
 func NewPreBufferedConn(conn net.Conn, preRead []byte) net.Conn {
-	return &PreBufferedConn{Conn: conn, buf: preRead}
+	return &preBufferedConn{Conn: conn, buf: preRead}
 }
 
-func (p *PreBufferedConn) Read(b []byte) (int, error) {
+func (p *preBufferedConn) Read(b []byte) (int, error) {
 	if len(p.buf) > 0 {
 		n := copy(b, p.buf)
 		p.buf = p.buf[n:]
@@ -99,7 +99,7 @@ func (p *PreBufferedConn) Read(b []byte) (int, error) {
 }
 
 // GetBufferedAndRecorded returns all data that has been consumed and buffered
-func (bc *BufferedConn) GetBufferedAndRecorded() []byte {
+func (bc *bufferedConn) GetBufferedAndRecorded() []byte {
 	if bc == nil {
 		return nil
 	}

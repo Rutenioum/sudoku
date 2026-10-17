@@ -28,16 +28,16 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
 )
 
-type HandshakeObfsProbeFunc func(probe []byte, table *sudoku.Table, uplinkMode ObfsUplinkMode) error
+type HandshakeObfsProbeFunc func(probe []byte, table *sudoku.Table, uplinkMode obfsUplinkMode) error
 
 type HandshakeObfsSelection struct {
 	Table      *sudoku.Table
-	UplinkMode ObfsUplinkMode
+	UplinkMode obfsUplinkMode
 }
 
 type handshakeObfsCandidate struct {
 	table      *sudoku.Table
-	uplinkMode ObfsUplinkMode
+	uplinkMode obfsUplinkMode
 }
 
 func drainBuffered(r *bufio.Reader) ([]byte, error) {
@@ -68,8 +68,8 @@ func SelectHandshakeObfsByProbe(r *bufio.Reader, tables []*sudoku.Table, probe H
 			continue
 		}
 		expanded = append(expanded,
-			handshakeObfsCandidate{table: table, uplinkMode: ObfsUplinkPure},
-			handshakeObfsCandidate{table: table, uplinkMode: ObfsUplinkPacked},
+			handshakeObfsCandidate{table: table, uplinkMode: obfsUplinkPure},
+			handshakeObfsCandidate{table: table, uplinkMode: obfsUplinkPacked},
 		)
 	}
 	if len(expanded) == 0 {
