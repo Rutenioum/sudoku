@@ -139,3 +139,41 @@ func BenchmarkSplitDownload(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkSplitPingPong measures the per-request cost of small interactive exchanges: each op is one upload
+// request carrying a short message plus one downlink chunk carrying the reply.
+func BenchmarkSplitPingPong(b *testing.B) {
+	const messageBytes = 64
+	for _, mode := range benchModes {
+		b.Run(mode, func(b *testing.B) {
+			addr, tunnels := startBenchServer(b, newBenchServer(mode))
+			client, server := dialBenchSession(b, addr, tunnels, mode)
+			defer client.Close()
+			defer server.Close()
+
+			go func() {
+				msg := make([]byte, messageBytes)
+				for {
+					if _, err := io.ReadFull(server, msg); err != nil {
+						return
+					}
+					if _, err := server.Write(msg); err != nil {
+						return
+					}
+				}
+			}()
+
+			msg := make([]byte, messageBytes)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := client.Write(msg); err != nil {
+					b.Fatalf("write: %v", err)
+				}
+				if _, err := io.ReadFull(client, msg); err != nil {
+					b.Fatalf("read: %v", err)
+				}
+			}
+		})
+	}
+}
