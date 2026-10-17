@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
+	"github.com/SUDOKU-ASCII/sudoku/internal/reverse/rewrite"
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
 )
 
@@ -292,10 +293,8 @@ func (m *Manager) matchByRefererLocked(r *http.Request) *routeEntry {
 	return m.matchLocked(refPath)
 }
 
-const reversePrefixCookieName = "sudoku_rev_prefix"
-
 func (m *Manager) matchByCookieLocked(r *http.Request) *routeEntry {
-	c, err := r.Cookie(reversePrefixCookieName)
+	c, err := r.Cookie(rewrite.PrefixCookieName)
 	if err != nil {
 		return nil
 	}
@@ -303,7 +302,7 @@ func (m *Manager) matchByCookieLocked(r *http.Request) *routeEntry {
 	if err != nil {
 		return nil
 	}
-	prefix = normalizePrefix(prefix)
+	prefix = rewrite.NormalizePrefix(prefix)
 	if prefix == "" {
 		return nil
 	}
@@ -376,12 +375,7 @@ func newRouteProxy(prefix, target string, stripPrefix bool, hostHeader string, m
 		// - cookie paths (Path=/)
 		// - root-absolute asset URLs in HTML/CSS/SVG/JSON ("/assets/...", url(/assets/...))
 		if stripPrefix && prefix != "/" {
-			rewriteLocation(resp, prefix)
-			rewriteSetCookiePath(resp, prefix)
-			rewriteReversePrefixCookie(resp, prefix)
-			if err := rewriteTextBody(resp, prefix); err != nil {
-				return err
-			}
+			return rewrite.Response(resp, prefix)
 		}
 		return nil
 	}
@@ -407,127 +401,4 @@ func stripPathPrefix(reqPath, prefix string) string {
 		return "/"
 	}
 	return reqPath
-}
-
-func rewriteLocation(resp *http.Response, prefix string) {
-	loc := strings.TrimSpace(resp.Header.Get("Location"))
-	if loc == "" {
-		return
-	}
-
-	// Root-absolute redirect.
-	if strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") {
-		u, err := url.Parse(loc)
-		if err != nil || u.Path == "" || !strings.HasPrefix(u.Path, "/") {
-			return
-		}
-		if pathPrefixMatch(u.Path, prefix) {
-			return
-		}
-		u.Path = prefix + u.Path
-		u.RawPath = ""
-		resp.Header.Set("Location", u.String())
-		return
-	}
-
-	// Absolute redirect to the same host.
-	if strings.HasPrefix(loc, "http://") || strings.HasPrefix(loc, "https://") {
-		u, err := url.Parse(loc)
-		if err != nil || u.Host == "" || u.Path == "" || !strings.HasPrefix(u.Path, "/") {
-			return
-		}
-		if strings.HasPrefix(u.Path, prefix+"/") || u.Path == prefix {
-			return
-		}
-		if !sameHTTPHost(resp.Request.Host, u.Host, u.Scheme) {
-			return
-		}
-		u.Path = prefix + u.Path
-		u.RawPath = ""
-		resp.Header.Set("Location", u.String())
-		return
-	}
-}
-
-func sameHTTPHost(reqHost, locHost, scheme string) bool {
-	reqHost = strings.TrimSpace(reqHost)
-	locHost = strings.TrimSpace(locHost)
-	if reqHost == "" || locHost == "" {
-		return false
-	}
-
-	reqURL := &url.URL{Host: reqHost}
-	locURL := &url.URL{Host: locHost}
-
-	if !strings.EqualFold(reqURL.Hostname(), locURL.Hostname()) {
-		return false
-	}
-
-	reqPort := reqURL.Port()
-	if reqPort == "" {
-		// If the request Host has no port, accept same-host redirects regardless of default port.
-		return true
-	}
-
-	locPort := locURL.Port()
-	if locPort == "" {
-		switch strings.ToLower(strings.TrimSpace(scheme)) {
-		case "https":
-			locPort = "443"
-		case "http":
-			locPort = "80"
-		default:
-			return false
-		}
-	}
-	return reqPort == locPort
-}
-
-func rewriteSetCookiePath(resp *http.Response, prefix string) {
-	values := resp.Header.Values("Set-Cookie")
-	if len(values) == 0 {
-		return
-	}
-
-	out := make([]string, 0, len(values))
-	for _, v := range values {
-		parts := strings.Split(v, ";")
-		for i := range parts {
-			part := strings.TrimSpace(parts[i])
-			if len(part) < 5 {
-				continue
-			}
-			// Case-insensitive "Path="
-			if strings.EqualFold(part[:5], "Path=") {
-				pathVal := strings.TrimSpace(part[5:])
-				if strings.HasPrefix(pathVal, "/") && !strings.HasPrefix(pathVal, "//") {
-					if strings.HasPrefix(pathVal, prefix+"/") || pathVal == prefix {
-						continue
-					}
-					parts[i] = "Path=" + prefix + pathVal
-				}
-			}
-		}
-		out = append(out, strings.Join(parts, ";"))
-	}
-
-	resp.Header.Del("Set-Cookie")
-	for _, v := range out {
-		resp.Header.Add("Set-Cookie", v)
-	}
-}
-
-func rewriteReversePrefixCookie(resp *http.Response, prefix string) {
-	p := normalizePrefix(prefix)
-	if p == "" {
-		return
-	}
-	c := (&http.Cookie{
-		Name:     reversePrefixCookieName,
-		Value:    url.PathEscape(p),
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	}).String()
-	resp.Header.Add("Set-Cookie", c)
 }

@@ -17,7 +17,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 In addition, no derivative work may use the name or imply association
 with this application without prior consent.
 */
-package reverse
+package rewrite
 
 import (
 	"bytes"
@@ -25,14 +25,14 @@ import (
 )
 
 func normalizedPrefixBytes(prefix string) []byte {
-	p := normalizePrefix(prefix)
+	p := NormalizePrefix(prefix)
 	if p == "" {
 		return nil
 	}
 	return []byte(p)
 }
 
-func normalizePrefix(prefix string) string {
+func NormalizePrefix(prefix string) string {
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" || prefix == "/" {
 		return ""
