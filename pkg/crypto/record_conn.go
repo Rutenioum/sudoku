@@ -329,6 +329,7 @@ func (c *RecordConn) WriteBuffers(buffers net.Buffers) (int64, error) {
 func (c *RecordConn) writeBuffers(buffers net.Buffers) (int64, error) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	defer func() { c.writeFrame = releaseFrame(c.writeFrame) }()
 
 	var total int64
 	offset := 0
@@ -363,10 +364,8 @@ func (c *RecordConn) writeBuffers(buffers net.Buffers) (int64, error) {
 		if bodyLen > maxFrameBodySize {
 			return total, errors.New("frame too large")
 		}
-		if cap(c.writeFrame) < frameLen {
-			c.writeFrame = make([]byte, frameLen)
-		}
-		frame := c.writeFrame[:frameLen]
+		c.writeFrame = growFrame(c.writeFrame, frameLen)
+		frame := c.writeFrame
 		binary.BigEndian.PutUint16(frame[:2], uint16(bodyLen))
 		header := frame[2 : 2+recordHeaderSize]
 		binary.BigEndian.PutUint32(header[:4], c.sendEpoch)
@@ -432,6 +431,8 @@ func (c *RecordConn) readLocked(p []byte) (int, error) {
 		return c.drainPlainLocked(p), nil
 	}
 
+	defer c.releaseDrainedFrameLocked()
+
 	if _, err := io.ReadFull(c.Conn, c.readLength[:]); err != nil {
 		return 0, err
 	}
@@ -443,10 +444,8 @@ func (c *RecordConn) readLocked(p []byte) (int, error) {
 		return 0, errors.New("frame too large")
 	}
 
-	if cap(c.readFrame) < bodyLen {
-		c.readFrame = make([]byte, bodyLen)
-	}
-	body := c.readFrame[:bodyLen]
+	c.readFrame = growFrame(c.readFrame, bodyLen)
+	body := c.readFrame
 	if _, err := io.ReadFull(c.Conn, body); err != nil {
 		return 0, err
 	}
@@ -517,6 +516,15 @@ func (c *RecordConn) drainPlainLocked(dst []byte) int {
 	if c.readOff >= len(c.readPlain) {
 		c.readPlain = nil
 		c.readOff = 0
+		c.releaseDrainedFrameLocked()
 	}
 	return n
+}
+
+// releaseDrainedFrameLocked returns a large read frame once no plaintext in it
+// is still waiting for the caller.
+func (c *RecordConn) releaseDrainedFrameLocked() {
+	if !c.hasPendingPlainLocked() {
+		c.readFrame = releaseFrame(c.readFrame)
+	}
 }
