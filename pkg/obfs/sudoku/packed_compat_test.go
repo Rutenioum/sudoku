@@ -30,7 +30,7 @@ func FuzzPackedReadCompatibility(f *testing.F) {
 		// write boundaries, padding levels and every supported layout.
 		var encoded bytes.Buffer
 		padding := []int{0, 10, 100}[int(fragment)%3]
-		table := &Table{layout: layout, PaddingPool: layout.paddingPool}
+		table := &Table{layout: layout}
 		writer := NewPackedConn(writeOnlyConn{Writer: &encoded}, table, padding, padding)
 		writer.rng = newSudokuRand(1)
 		split := len(wire) / 2
@@ -52,7 +52,7 @@ func decodePackedReference(layout *byteLayout, wire []byte) []byte {
 	var bits uint32
 	count := 0
 	for _, b := range wire {
-		if !layout.hintTable[b] {
+		if !isHint(layout, b) {
 			if b == layout.padMarker {
 				bits, count = 0, 0
 			}

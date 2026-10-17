@@ -37,7 +37,7 @@ type Conn struct {
 	reader *bufio.Reader
 	rec    handshakeRecorder
 
-	hintBuf   [4]byte
+	hintBuf   [3]uint8 // hint indexes of a group still being read
 	hintCount int
 	writeMu   sync.Mutex
 	writeBuf  []byte

@@ -2,6 +2,7 @@ package sudoku
 
 import (
 	"io"
+	"math"
 
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 )
@@ -12,18 +13,18 @@ const maxEncodedWriteSize = 32 * 1024
 // Fill the remaining space with complete payload bytes, then send that buffer.
 // Padding at the end belongs to the caller's Write, never to an internal batch.
 func writeSudokuPayload(w io.Writer, buf []byte, table *Table, rng *sudokuRand, threshold uint64, p []byte) ([]byte, int, error) {
-	maxExpansion := 9 // one leading pad and four (pad, hint) pairs
+	maxExpansion := maxPaddedExpansion
 	if threshold == 0 {
 		maxExpansion = 4
 	}
-	needed := min(min(len(p), maxEncodedWriteSize)*maxExpansion+1, maxEncodedWriteSize)
+	needed := min(min(len(p), maxEncodedWriteSize)*maxExpansion+encodeSlack, maxEncodedWriteSize)
 	if cap(buf) < needed {
 		buf = make([]byte, 0, needed)
 	}
 	out := buf[:0]
 	total, buffered := 0, 0
 	for len(p) > 0 {
-		n := min(len(p), (cap(out)-len(out)-1)/maxExpansion)
+		n := min(len(p), (cap(out)-len(out)-encodeSlack)/maxExpansion)
 		if n == 0 {
 			if err := writeEncoded(w, out); err != nil {
 				return out[:0], total, err
@@ -37,8 +38,12 @@ func writeSudokuPayload(w io.Writer, buf []byte, table *Table, rng *sudokuRand, 
 		buffered += n
 		p = p[n:]
 	}
-	if threshold >= probOne || (threshold != 0 && uint64(rng.Uint32()) < threshold) {
-		out = append(out, table.PaddingPool[rng.Intn(len(table.PaddingPool))])
+	if threshold != 0 {
+		draw := rng.Uint64()
+		if draw&math.MaxUint32 < threshold {
+			pool := table.layout.paddingPool
+			out = append(out, pool[(draw>>32)*uint64(len(pool))>>32])
+		}
 	}
 	if err := writeEncoded(w, out); err != nil {
 		return out[:0], total, err

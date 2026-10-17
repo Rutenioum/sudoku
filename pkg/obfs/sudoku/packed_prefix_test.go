@@ -27,7 +27,7 @@ func TestPackedConn_ProtectedPrefixPadding(t *testing.T) {
 	maxHintRun := 0
 	currentHintRun := 0
 	for i, b := range wire[:20] {
-		if table.layout.hintTable[b] {
+		if isHint(table.layout, b) {
 			if firstHint == -1 {
 				firstHint = i
 			}

@@ -118,7 +118,7 @@ func TestPackedConn_SmallReadDoesNotOverDecode(t *testing.T) {
 func countNonHintBytes(data []byte, table *Table) int {
 	count := 0
 	for _, b := range data {
-		if !table.layout.hintTable[b] {
+		if !isHint(table.layout, b) {
 			count++
 		}
 	}

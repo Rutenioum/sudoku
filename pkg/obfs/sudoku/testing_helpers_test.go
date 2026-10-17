@@ -92,3 +92,16 @@ func (c *cyclicReadConn) Read(p []byte) (int, error) {
 }
 
 func (*cyclicReadConn) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+// isHint reports whether b is a hint-class byte under the layout.
+func isHint(l *byteLayout, b byte) bool { return l.hintIdx[b] != notHint }
+
+// puzzlesOf returns the puzzles of plaintext byte b as four hint bytes each.
+func puzzlesOf(tb *Table, b byte) [][4]byte {
+	packed := tb.puzzles[tb.puzzleStart[b]:tb.puzzleStart[int(b)+1]]
+	out := make([][4]byte, len(packed))
+	for i, p := range packed {
+		out[i] = [4]byte{byte(p), byte(p >> 8), byte(p >> 16), byte(p >> 24)}
+	}
+	return out
+}

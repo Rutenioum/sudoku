@@ -19,7 +19,13 @@ with this application without prior consent.
 */
 package sudoku
 
-import "sync"
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"math/rand"
+	"slices"
+	"sync"
+)
 
 // grid is one filled 4x4 sudoku grid, row-major, values 1..4.
 type grid [16]uint8
@@ -68,3 +74,16 @@ func generateAllGrids() []grid {
 }
 
 var allGrids = sync.OnceValue(generateAllGrids)
+
+// shuffledGrids orders every grid by a key-seeded shuffle: position k in the
+// result is the grid of plaintext byte k, and the 32 trailing grids encode
+// nothing. The math/rand v1 stream is part of the wire contract.
+func shuffledGrids(key string) []grid {
+	sum := sha256.Sum256([]byte(key))
+	rng := rand.New(rand.NewSource(int64(binary.BigEndian.Uint64(sum[:8]))))
+	grids := slices.Clone(allGrids())
+	rng.Shuffle(len(grids), func(i, j int) {
+		grids[i], grids[j] = grids[j], grids[i]
+	})
+	return grids
+}

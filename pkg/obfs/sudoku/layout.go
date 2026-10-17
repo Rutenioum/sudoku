@@ -33,10 +33,33 @@ type byteLayout struct {
 	padMarker   byte
 	paddingPool []byte
 
-	hintTable   [256]bool
+	hintIdx     [256]uint8 // pos<<2|val for a hint byte, poisonHint for a hint-class byte no encoder emits, notHint otherwise
 	encodeHint  [4][16]byte
 	encodeGroup [64]byte
 	decodeGroup [256]byte // 0..63 for hints, 0xff for padding/invalid bytes
+}
+
+const (
+	// poisonHint indexes an all-zero set: a hint-class byte no encoder emits,
+	// which keeps the stream from ever decoding.
+	poisonHint = 64
+	notHint    = 0x80
+)
+
+// indexHints derives hintIdx from encodeHint; aliases lists hint-class wire
+// bytes that encodeHint never produces.
+func (l *byteLayout) indexHints(aliases ...byte) {
+	for i := range l.hintIdx {
+		l.hintIdx[i] = notHint
+	}
+	for _, b := range aliases {
+		l.hintIdx[b] = poisonHint
+	}
+	for val := range l.encodeHint {
+		for pos, b := range l.encodeHint[val] {
+			l.hintIdx[b] = uint8(pos<<2 | val)
+		}
+	}
 }
 
 func (l *byteLayout) hintByte(val, pos byte) byte {
@@ -91,16 +114,19 @@ func newASCIILayout() *byteLayout {
 		}
 		layout.encodeGroup[group] = b
 	}
+	// Every byte with bit 6 set is hint-class on the wire, though only the 63
+	// below 0x7F and '\n' are ever emitted as hints.
+	var aliases []byte
 	for b := 0; b < 256; b++ {
 		layout.decodeGroup[b] = 0xff
 		wire := byte(b)
 		if (wire & 0x40) == 0x40 {
-			layout.hintTable[wire] = true
 			layout.decodeGroup[wire] = wire & 0x3F
+			aliases = append(aliases, wire)
 		}
 	}
-	layout.hintTable['\n'] = true
 	layout.decodeGroup['\n'] = 0x3F
+	layout.indexHints(aliases...)
 
 	return layout
 }
@@ -135,9 +161,9 @@ func newEntropyLayout() *byteLayout {
 		if (wire & 0x90) != 0 {
 			continue
 		}
-		layout.hintTable[wire] = true
 		layout.decodeGroup[wire] = ((wire >> 1) & 0x30) | (wire & 0x0F)
 	}
+	layout.indexHints()
 
 	return layout
 }
@@ -236,7 +262,6 @@ func newCustomLayout(pattern string) (*byteLayout, error) {
 		if (wire & xMask) != xMask {
 			continue
 		}
-		layout.hintTable[wire] = true
 
 		var val, pos byte
 		if wire&(1<<pBits[0]) != 0 {
@@ -252,6 +277,7 @@ func newCustomLayout(pattern string) (*byteLayout, error) {
 		}
 		layout.decodeGroup[wire] = (val << 4) | pos
 	}
+	layout.indexHints()
 
 	return layout, nil
 }

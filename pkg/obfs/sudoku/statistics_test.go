@@ -19,10 +19,6 @@ import (
 
 const statPlaintextLen = 1 << 18
 
-func puzzlesFor(tb *Table, b byte) [][4]byte { return tb.EncodeTable[b] }
-
-func paddingPoolOf(tb *Table) []byte { return tb.PaddingPool }
-
 func puzzleSetKey(h [4]byte) uint32 {
 	s := h
 	sort.Slice(s[:], func(i, j int) bool { return s[i] < s[j] })
@@ -105,7 +101,7 @@ func checkWireStatistics(t *testing.T, table *Table, pct int) {
 	}
 
 	var inPool [256]bool
-	for _, b := range paddingPoolOf(table) {
+	for _, b := range table.layout.paddingPool {
 		inPool[b] = true
 	}
 
@@ -117,7 +113,7 @@ func checkWireStatistics(t *testing.T, table *Table, pct int) {
 	hints, inGroup, run := 0, 0, 0
 	for _, b := range wire {
 		hist[b]++
-		if table.layout.hintTable[b] {
+		if isHint(table.layout, b) {
 			hints++
 			inGroup = (inGroup + 1) % 4
 			run = 0
@@ -156,7 +152,7 @@ func checkWireStatistics(t *testing.T, table *Table, pct int) {
 	// padding drawn uniformly from the pool.
 	var expected [256]float64
 	for b := 0; b < 256; b++ {
-		puzzles := puzzlesFor(table, byte(b))
+		puzzles := puzzlesOf(table, byte(b))
 		for _, puzzle := range puzzles {
 			for _, h := range puzzle {
 				expected[h] += 1 / 256.0 / float64(len(puzzles)) / 4
@@ -164,7 +160,7 @@ func checkWireStatistics(t *testing.T, table *Table, pct int) {
 		}
 	}
 	hintShare := 4 / (4 + 5*p)
-	pool := paddingPoolOf(table)
+	pool := table.layout.paddingPool
 	for i := range expected {
 		expected[i] *= hintShare
 	}
@@ -215,7 +211,7 @@ func checkPuzzleAndOrderUniformity(t *testing.T, table *Table, pct int) {
 	plain := bytes.Repeat([]byte{target}, statPlaintextLen/2)
 	wire := encodePure(t, table, pct, plain)
 
-	puzzles := puzzlesFor(table, target)
+	puzzles := puzzlesOf(table, target)
 	index := make(map[uint32]int, len(puzzles))
 	for i, puzzle := range puzzles {
 		index[puzzleSetKey(puzzle)] = i
@@ -226,7 +222,7 @@ func checkPuzzleAndOrderUniformity(t *testing.T, table *Table, pct int) {
 	var group [4]byte
 	n := 0
 	for _, b := range wire {
-		if !table.layout.hintTable[b] {
+		if !isHint(table.layout, b) {
 			continue
 		}
 		group[n] = b

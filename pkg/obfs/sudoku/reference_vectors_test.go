@@ -65,6 +65,32 @@ func referencePlaintext(n int) []byte {
 	return p
 }
 
+// sortedKey packs four hint bytes, sorted ascending, into one big-endian word.
+func sortedKey(h [4]byte) uint32 {
+	s := h[:]
+	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	return binary.BigEndian.Uint32(s)
+}
+
+// decodeEntries enumerates every four-cell hint set the decoder accepts, keyed
+// like the v0.5.1 decode map: sorted wire bytes to plaintext byte.
+func decodeEntries(tb *Table) map[uint32]byte {
+	wire := func(idx int) byte { return tb.layout.encodeHint[idx&3][idx>>2] }
+	entries := map[uint32]byte{}
+	for a := 0; a < 64; a++ {
+		for b := a + 1; b < 64; b++ {
+			for c := b + 1; c < 64; c++ {
+				for d := c + 1; d < 64; d++ {
+					if v, ok := tb.decodeHints(uint8(a), uint8(b), uint8(c), uint8(d)); ok {
+						entries[sortedKey([4]byte{wire(a), wire(b), wire(c), wire(d)})] = v
+					}
+				}
+			}
+		}
+	}
+	return entries
+}
+
 // tableFingerprint hashes the wire-visible content of a table in canonical
 // order: the puzzle set per byte, the decode map, and the padding pool.
 func tableFingerprint(tb *Table) string {
@@ -75,11 +101,10 @@ func tableFingerprint(tb *Table) string {
 		h.Write(u32[:])
 	}
 	for b := 0; b < 256; b++ {
-		keys := make([]uint32, 0, len(tb.EncodeTable[b]))
-		for _, p := range tb.EncodeTable[b] {
-			s := []byte{p[0], p[1], p[2], p[3]}
-			sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
-			keys = append(keys, binary.BigEndian.Uint32(s))
+		puzzles := puzzlesOf(tb, byte(b))
+		keys := make([]uint32, 0, len(puzzles))
+		for _, p := range puzzles {
+			keys = append(keys, sortedKey(p))
 		}
 		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 		put(uint32(len(keys)))
@@ -87,17 +112,18 @@ func tableFingerprint(tb *Table) string {
 			put(k)
 		}
 	}
-	decodeKeys := make([]uint32, 0, len(tb.DecodeMap))
-	for k := range tb.DecodeMap {
+	decode := decodeEntries(tb)
+	decodeKeys := make([]uint32, 0, len(decode))
+	for k := range decode {
 		decodeKeys = append(decodeKeys, k)
 	}
 	sort.Slice(decodeKeys, func(i, j int) bool { return decodeKeys[i] < decodeKeys[j] })
 	put(uint32(len(decodeKeys)))
 	for _, k := range decodeKeys {
 		put(k)
-		h.Write([]byte{tb.DecodeMap[k]})
+		h.Write([]byte{decode[k]})
 	}
-	pool := append([]byte(nil), tb.PaddingPool...)
+	pool := append([]byte(nil), tb.layout.paddingPool...)
 	sort.Slice(pool, func(i, j int) bool { return pool[i] < pool[j] })
 	put(uint32(len(pool)))
 	h.Write(pool)

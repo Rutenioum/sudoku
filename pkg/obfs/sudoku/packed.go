@@ -91,8 +91,8 @@ func NewPackedConnWithRecord(c net.Conn, table *Table, pMin, pMax int, record bo
 
 	if table != nil && table.layout != nil {
 		pc.padMarker = table.layout.padMarker
-		pc.padPool = make([]byte, 0, len(table.PaddingPool))
-		for _, b := range table.PaddingPool {
+		pc.padPool = make([]byte, 0, len(table.layout.paddingPool))
+		for _, b := range table.layout.paddingPool {
 			if b != pc.padMarker {
 				pc.padPool = append(pc.padPool, b)
 			}
