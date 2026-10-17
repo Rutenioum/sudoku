@@ -1,13 +1,9 @@
-package tests
+package cliutil
 
-import (
-	"testing"
-
-	"github.com/SUDOKU-ASCII/sudoku/internal/cliutil"
-)
+import "testing"
 
 func TestMultiValueFlagSupportsRepeatAndCommaSeparatedValues(t *testing.T) {
-	var flag cliutil.MultiValue
+	var flag MultiValue
 
 	if err := flag.Set("a.json,b.json"); err != nil {
 		t.Fatalf("Set error: %v", err)
@@ -26,7 +22,7 @@ func TestMultiValueFlagSupportsRepeatAndCommaSeparatedValues(t *testing.T) {
 }
 
 func TestMultiValueFlagUsesDefaultWhenUnset(t *testing.T) {
-	var flag cliutil.MultiValue
+	var flag MultiValue
 
 	values := flag.Values("server.config.json")
 	if len(values) != 1 || values[0] != "server.config.json" {
@@ -38,7 +34,7 @@ func TestMultiValueFlagUsesDefaultWhenUnset(t *testing.T) {
 }
 
 func TestMultiValueFlagReportsWhenExplicitlySet(t *testing.T) {
-	var flag cliutil.MultiValue
+	var flag MultiValue
 
 	if err := flag.Set("a.json"); err != nil {
 		t.Fatalf("Set error: %v", err)

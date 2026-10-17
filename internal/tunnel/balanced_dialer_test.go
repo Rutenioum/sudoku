@@ -1,4 +1,4 @@
-package tests
+package tunnel
 
 import (
 	"crypto/sha256"
@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net"
 	"testing"
-
-	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
 )
 
 type mockBalancedDialer struct {
@@ -40,7 +38,7 @@ func TestBalancedDialerStickySelectionIsStable(t *testing.T) {
 	left := &mockBalancedDialer{}
 	right := &mockBalancedDialer{}
 
-	lb, err := tunnel.NewBalancedDialer([]tunnel.BalancedNode{
+	lb, err := NewBalancedDialer([]BalancedNode{
 		{ID: "left", Dialer: left},
 		{ID: "right", Dialer: right},
 	})
@@ -73,7 +71,7 @@ func TestBalancedDialerFallsBackToNextCandidate(t *testing.T) {
 	primary := &mockBalancedDialer{dialErr: fmt.Errorf("boom")}
 	secondary := &mockBalancedDialer{}
 
-	lb, err := tunnel.NewBalancedDialer([]tunnel.BalancedNode{
+	lb, err := NewBalancedDialer([]BalancedNode{
 		{ID: "primary", Dialer: primary},
 		{ID: "secondary", Dialer: secondary},
 	})
@@ -100,7 +98,7 @@ func TestBalancedDialerUDPUsesRoundRobin(t *testing.T) {
 	left := &mockBalancedDialer{}
 	right := &mockBalancedDialer{}
 
-	lb, err := tunnel.NewBalancedDialer([]tunnel.BalancedNode{
+	lb, err := NewBalancedDialer([]BalancedNode{
 		{ID: "left", Dialer: left},
 		{ID: "right", Dialer: right},
 	})
@@ -125,7 +123,7 @@ func TestBalancedDialerMakesDuplicateNodeIDsUnique(t *testing.T) {
 	first := &mockBalancedDialer{}
 	second := &mockBalancedDialer{}
 
-	lb, err := tunnel.NewBalancedDialer([]tunnel.BalancedNode{
+	lb, err := NewBalancedDialer([]BalancedNode{
 		{ID: "dup", Dialer: first},
 		{ID: "dup", Dialer: second},
 	})
@@ -158,7 +156,7 @@ func TestStickyKeyForAddress(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		if got := tunnel.StickyKeyForAddress(tc.addr, tc.ip); got != tc.want {
+		if got := StickyKeyForAddress(tc.addr, tc.ip); got != tc.want {
 			t.Fatalf("%s: StickyKeyForAddress(%q) = %q, want %q", tc.name, tc.addr, got, tc.want)
 		}
 	}
