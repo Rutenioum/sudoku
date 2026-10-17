@@ -43,20 +43,21 @@ func processCPUTime(tb testing.TB) time.Duration {
 	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
 
-func liveHeapBytes() uint64 {
+// liveMemory returns the live heap and the goroutine stack bytes in use after a collection.
+func liveMemory() (heap, stack int64) {
 	runtime.GC()
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
-	return ms.HeapAlloc
+	return int64(ms.HeapAlloc), int64(ms.StackInuse)
 }
 
-// BenchmarkSplitIdleSessions reports the CPU and heap that idle established sessions cost on both ends.
+// BenchmarkSplitIdleSessions reports the CPU, heap and goroutine stacks that idle established sessions cost on both ends.
 func BenchmarkSplitIdleSessions(b *testing.B) {
 	for _, mode := range benchModes {
 		b.Run(mode, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				b.StopTimer()
-				heapBefore := liveHeapBytes()
+				heapBefore, stackBefore := liveMemory()
 				addr, tunnels := startBenchServer(b, newBenchServer(mode))
 				var conns []net.Conn
 				for j := 0; j < idleBenchSessions; j++ {
@@ -64,7 +65,9 @@ func BenchmarkSplitIdleSessions(b *testing.B) {
 					conns = append(conns, client, server)
 				}
 				time.Sleep(200 * time.Millisecond) // let dial-time work settle
-				b.ReportMetric(float64(liveHeapBytes()-heapBefore)/idleBenchSessions, "heap-B/session")
+				heapAfter, stackAfter := liveMemory()
+				b.ReportMetric(float64(heapAfter-heapBefore)/idleBenchSessions, "heap-B/session")
+				b.ReportMetric(float64(stackAfter-stackBefore)/idleBenchSessions, "stack-B/session")
 
 				cpuBefore := processCPUTime(b)
 				b.StartTimer()
