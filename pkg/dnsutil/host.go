@@ -20,15 +20,40 @@ with this application without prior consent.
 package dnsutil
 
 import (
-	"net"
+	"net/netip"
 	"strings"
 )
 
-// normalizeHost returns the cache key for host and its IP form when host is a literal.
-func normalizeHost(host string) (string, net.IP) {
-	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
-	return host, net.ParseIP(host)
+// normalizeHost returns the cache key for host.
+func normalizeHost(host string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 }
+
+// parseIPLiteral parses s as an IP address without a zone. Names are rejected
+// before netip.ParseAddr so the common hostname path allocates nothing.
+func parseIPLiteral(s string) (netip.Addr, bool) {
+	if !mayBeIPLiteral(s) {
+		return netip.Addr{}, false
+	}
+	addr, err := netip.ParseAddr(s)
+	if err != nil || addr.Zone() != "" {
+		return netip.Addr{}, false
+	}
+	return addr, true
+}
+
+// mayBeIPLiteral is a constant-time filter: a dotted quad starts and ends with a digit, IPv6 has a colon.
+func mayBeIPLiteral(s string) bool {
+	if s == "" {
+		return false
+	}
+	if isDigit(s[0]) && isDigit(s[len(s)-1]) {
+		return true
+	}
+	return strings.IndexByte(s, ':') >= 0
+}
+
+func isDigit(c byte) bool { return '0' <= c && c <= '9' }
 
 // isLikelyLocalHostname reports names that only a local resolver can answer
 // (single labels and the usual intranet suffixes).

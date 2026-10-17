@@ -21,15 +21,15 @@ package dnsutil
 
 import (
 	"context"
-	"net"
+	"net/netip"
 	"testing"
 	"time"
 )
 
 func benchResolver(b *testing.B) *Resolver {
 	b.Helper()
-	r := newResolver(time.Hour, func(ctx context.Context, network, host string) ([]net.IP, error) {
-		return []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("93.184.216.35")}, nil
+	r := newResolver(time.Hour, func(ctx context.Context, network, host string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("93.184.216.35")}, nil
 	})
 	if _, err := r.Resolve(context.Background(), "example.com:443"); err != nil {
 		b.Fatal(err)

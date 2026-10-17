@@ -24,43 +24,62 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 )
 
+const (
+	maxCacheEntries = 4096
+	// maxStaleAge bounds how long past its TTL an entry may still answer when every server fails.
+	maxStaleAge = 24 * time.Hour
+)
+
 // benchmarkNet is the range fake-IP DNS servers answer with; real lookups never return it.
-var benchmarkNet = &net.IPNet{IP: net.IPv4(198, 18, 0, 0).To4(), Mask: net.CIDRMask(15, 32)}
+var benchmarkNet = netip.MustParsePrefix("198.18.0.0/15")
 
-var errNoIPRecords = errors.New("no ip records found")
+var (
+	errNoIPRecords = errors.New("no ip records found")
+	errEmptyHost   = errors.New("empty host")
+)
 
-// lookupIPFunc has the shape of net.Resolver.LookupIP.
-type lookupIPFunc func(ctx context.Context, network, host string) ([]net.IP, error)
+// lookupIPFunc has the shape of net.Resolver.LookupNetIP.
+type lookupIPFunc func(ctx context.Context, network, host string) ([]netip.Addr, error)
 
-var systemLookup lookupIPFunc = net.DefaultResolver.LookupIP
+var systemLookup lookupIPFunc = net.DefaultResolver.LookupNetIP
 
 type nameServer interface {
-	LookupIPv4(ctx context.Context, host string) ([]net.IP, error)
+	LookupIPv4(ctx context.Context, host string) ([]netip.Addr, error)
 }
 
 type localNameServer struct {
 	lookup lookupIPFunc
 }
 
-func (s localNameServer) LookupIPv4(ctx context.Context, host string) ([]net.IP, error) {
+func (s localNameServer) LookupIPv4(ctx context.Context, host string) ([]netip.Addr, error) {
 	return s.lookup(ctx, "ip4", host)
 }
 
+// cacheEntry keeps only the address Resolve hands out, already rendered.
 type cacheEntry struct {
-	ips       []net.IP
+	ip        string
 	expiresAt time.Time
+}
+
+// lookupCall is one in-flight server query shared by every caller asking for the same host.
+type lookupCall struct {
+	done  chan struct{}
+	entry cacheEntry
+	err   error
 }
 
 type Resolver struct {
 	mu        sync.RWMutex
 	cache     map[string]cacheEntry
+	inflight  map[string]*lookupCall
 	ttl       time.Duration
 	timeout   time.Duration
-	bogusNets []*net.IPNet
+	bogusNets []netip.Prefix
 	servers   []nameServer
 }
 
@@ -75,13 +94,11 @@ func NewResolver(opts Options) (*Resolver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Resolver{
-		cache:     make(map[string]cacheEntry),
-		ttl:       defaultCacheTTL,
-		timeout:   timeout,
-		bogusNets: []*net.IPNet{benchmarkNet},
-		servers:   servers,
-	}, nil
+	r := newResolver(defaultCacheTTL, nil)
+	r.timeout = timeout
+	r.bogusNets = []netip.Prefix{benchmarkNet}
+	r.servers = servers
+	return r, nil
 }
 
 func newResolver(ttl time.Duration, lookup lookupIPFunc) *Resolver {
@@ -89,10 +106,11 @@ func newResolver(ttl time.Duration, lookup lookupIPFunc) *Resolver {
 		lookup = systemLookup
 	}
 	return &Resolver{
-		cache:   make(map[string]cacheEntry),
-		ttl:     ttl,
-		timeout: defaultLookupTimeout,
-		servers: []nameServer{localNameServer{lookup: lookup}},
+		cache:    make(map[string]cacheEntry),
+		inflight: make(map[string]*lookupCall),
+		ttl:      ttl,
+		timeout:  defaultLookupTimeout,
+		servers:  []nameServer{localNameServer{lookup: lookup}},
 	}
 }
 
@@ -132,69 +150,119 @@ func (r *Resolver) Resolve(ctx context.Context, addr string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid address %q: %w", addr, err)
 	}
-	if net.ParseIP(host) != nil {
+	if _, ok := parseIPLiteral(host); ok {
 		return addr, nil
 	}
-	ips, err := r.lookupIPs(ctx, host)
+	ip, err := r.lookupHost(ctx, host)
 	if err != nil {
 		return "", err
 	}
-	return net.JoinHostPort(ips[0].String(), port), nil
+	return net.JoinHostPort(ip, port), nil
 }
 
-// lookupIPs never returns an empty slice without an error.
-func (r *Resolver) lookupIPs(ctx context.Context, host string) ([]net.IP, error) {
-	key, literal := normalizeHost(host)
-	if literal != nil {
-		return []net.IP{literal}, nil
-	}
+// lookupHost returns the address to dial for host. An expired entry still answers
+// when refreshing fails, until it is maxStaleAge past its TTL.
+func (r *Resolver) lookupHost(ctx context.Context, host string) (string, error) {
+	key := normalizeHost(host)
 	if key == "" {
-		return nil, errors.New("empty host")
+		return "", errEmptyHost
+	}
+	if literal, ok := parseIPLiteral(key); ok {
+		return literal.Unmap().String(), nil
 	}
 
 	now := time.Now()
-	stale, fresh := r.cached(key, now)
-	if fresh {
-		return stale, nil
-	}
-	ips, err := r.lookupFresh(ctx, key)
-	if err != nil {
-		if len(stale) > 0 {
-			return stale, nil
-		}
-		return nil, fmt.Errorf("dns lookup failed for %s: %w", key, err)
-	}
-	r.store(key, ips, now)
-	return ips, nil
-}
-
-func (r *Resolver) cached(key string, now time.Time) (ips []net.IP, fresh bool) {
 	r.mu.RLock()
-	entry, ok := r.cache[key]
+	entry, cached := r.cache[key]
 	r.mu.RUnlock()
-	if !ok {
-		return nil, false
+	if cached && !now.After(entry.expiresAt) {
+		return entry.ip, nil
 	}
-	return entry.ips, !now.After(entry.expiresAt)
+
+	fresh, err := r.refresh(ctx, key)
+	if err == nil {
+		return fresh.ip, nil
+	}
+	if cached && now.Before(entry.expiresAt.Add(maxStaleAge)) {
+		return entry.ip, nil
+	}
+	return "", fmt.Errorf("dns lookup failed for %s: %w", key, err)
 }
 
-func (r *Resolver) store(key string, ips []net.IP, now time.Time) {
+// refresh joins the in-flight query for key or starts one. The query outlives the
+// caller that started it, so one caller giving up does not fail the others.
+func (r *Resolver) refresh(ctx context.Context, key string) (cacheEntry, error) {
 	r.mu.Lock()
-	r.cache[key] = cacheEntry{ips: ips, expiresAt: now.Add(r.ttl)}
+	call, running := r.inflight[key]
+	if !running {
+		call = &lookupCall{done: make(chan struct{})}
+		r.inflight[key] = call
+	}
 	r.mu.Unlock()
+
+	if !running {
+		queryCtx, cancel := r.queryContext(ctx)
+		go r.runQuery(queryCtx, cancel, key, call)
+	}
+	select {
+	case <-call.done:
+		return call.entry, call.err
+	case <-ctx.Done():
+		return cacheEntry{}, ctx.Err()
+	}
 }
 
-// lookupFresh asks the servers in order and returns the first usable, normalized answer.
-func (r *Resolver) lookupFresh(ctx context.Context, host string) ([]net.IP, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, r.timeout)
-		defer cancel()
+// queryContext keeps the caller's values and deadline but not its cancellation.
+func (r *Resolver) queryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	detached := context.WithoutCancel(ctx)
+	if deadline, ok := ctx.Deadline(); ok {
+		return context.WithDeadline(detached, deadline)
 	}
+	return context.WithTimeout(detached, r.timeout)
+}
+
+func (r *Resolver) runQuery(ctx context.Context, cancel context.CancelFunc, key string, call *lookupCall) {
+	defer cancel()
+	ip, err := r.queryServers(ctx, key)
+
+	r.mu.Lock()
+	if err == nil {
+		now := time.Now()
+		call.entry = cacheEntry{ip: ip, expiresAt: now.Add(r.ttl)}
+		r.putLocked(key, call.entry, now)
+	}
+	call.err = err
+	delete(r.inflight, key)
+	r.mu.Unlock()
+	close(call.done)
+}
+
+// putLocked inserts entry, first making room by dropping entries too stale to ever
+// be served again and then, if still full, the one expiring soonest.
+func (r *Resolver) putLocked(key string, entry cacheEntry, now time.Time) {
+	if _, exists := r.cache[key]; !exists && len(r.cache) >= maxCacheEntries {
+		var oldestKey string
+		var oldest time.Time
+		for k, e := range r.cache {
+			if now.After(e.expiresAt.Add(maxStaleAge)) {
+				delete(r.cache, k)
+			} else if oldestKey == "" || e.expiresAt.Before(oldest) {
+				oldestKey, oldest = k, e.expiresAt
+			}
+		}
+		if len(r.cache) >= maxCacheEntries {
+			delete(r.cache, oldestKey)
+		}
+	}
+	r.cache[key] = entry
+}
+
+// queryServers asks the servers in order and returns the first usable address.
+func (r *Resolver) queryServers(ctx context.Context, host string) (string, error) {
 	var firstErr error
 	for _, srv := range r.servers {
-		ips, err := srv.LookupIPv4(ctx, host)
-		if err == nil && len(ips) == 0 {
+		addrs, err := srv.LookupIPv4(ctx, host)
+		if err == nil && len(addrs) == 0 {
 			err = errNoIPRecords
 		}
 		if err != nil {
@@ -203,54 +271,32 @@ func (r *Resolver) lookupFresh(ctx context.Context, host string) ([]net.IP, erro
 			}
 			continue
 		}
-		if ips = r.dropBogus(normalizeIPs(ips)); len(ips) > 0 {
-			return ips, nil
+		if addr, ok := r.firstUsable(addrs); ok {
+			return addr.String(), nil
 		}
 	}
 	if firstErr == nil {
 		firstErr = errNoIPRecords
 	}
-	return nil, firstErr
+	return "", firstErr
 }
 
-func (r *Resolver) dropBogus(ips []net.IP) []net.IP {
-	if len(r.bogusNets) == 0 {
-		return ips
-	}
-	out := make([]net.IP, 0, len(ips))
-	for _, ip := range ips {
-		if !isBogusIP(ip, r.bogusNets) {
-			out = append(out, ip)
+// firstUsable returns the first valid address that is not in a bogus range.
+func (r *Resolver) firstUsable(addrs []netip.Addr) (netip.Addr, bool) {
+	for _, addr := range addrs {
+		addr = addr.Unmap()
+		if addr.IsValid() && !r.isBogus(addr) {
+			return addr, true
 		}
 	}
-	return out
+	return netip.Addr{}, false
 }
 
-func isBogusIP(ip net.IP, nets []*net.IPNet) bool {
-	for _, n := range nets {
-		if n.Contains(ip) {
+func (r *Resolver) isBogus(addr netip.Addr) bool {
+	for _, prefix := range r.bogusNets {
+		if prefix.Contains(addr) {
 			return true
 		}
 	}
 	return false
-}
-
-// normalizeIPs de-duplicates ips, keeping first-seen order and the 4-byte form of IPv4 addresses.
-func normalizeIPs(ips []net.IP) []net.IP {
-	out := make([]net.IP, 0, len(ips))
-	seen := make(map[string]struct{}, len(ips))
-	for _, ip := range ips {
-		if v4 := ip.To4(); v4 != nil {
-			ip = v4
-		} else if ip = ip.To16(); ip == nil {
-			continue
-		}
-		key := ip.String()
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, ip)
-	}
-	return out
 }

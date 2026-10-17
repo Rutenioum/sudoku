@@ -27,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -197,8 +198,8 @@ func TestHTTPSNameServerLocalNamesBypassDoH(t *testing.T) {
 	ns, requests := newTestDoHServer(t, func(t *testing.T, query []byte) (int, []byte) {
 		return 200, dohTestAnswers(t, query, dnsmessage.RCodeSuccess)
 	})
-	ns.local = localNameServer{lookup: func(context.Context, string, string) ([]net.IP, error) {
-		return []net.IP{net.ParseIP("10.9.8.7")}, nil
+	ns.local = localNameServer{lookup: func(context.Context, string, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("10.9.8.7")}, nil
 	}}
 	for _, host := range []string{"printer", "nas.local", "router.lan"} {
 		ips, err := ns.LookupIPv4(context.Background(), host)

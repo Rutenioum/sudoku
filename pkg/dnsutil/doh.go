@@ -28,6 +28,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -39,6 +40,7 @@ const (
 	dohPort                = "443"
 	dohPath                = "/dns-query"
 	dohHandshakeTimeoutMax = 10 * time.Second
+	maxDoHResponseBytes    = 64 << 10 // the DNS message size limit
 )
 
 type httpsNameServer struct {
@@ -65,7 +67,7 @@ func newHTTPSNameServer(srv ServerOptions, timeout time.Duration) (*httpsNameSer
 		if addr == "" {
 			continue
 		}
-		if net.ParseIP(addr) == nil {
+		if _, ok := parseIPLiteral(addr); !ok {
 			return nil, fmt.Errorf("invalid bootstrap ip %q", addr)
 		}
 		ns.bootstrap = append(ns.bootstrap, net.JoinHostPort(addr, dohPort))
@@ -92,7 +94,7 @@ func (s *httpsNameServer) dialContext(ctx context.Context, network, _ string) (n
 	return OutboundDialer(0).DialContext(ctx, network, target)
 }
 
-func (s *httpsNameServer) LookupIPv4(ctx context.Context, host string) ([]net.IP, error) {
+func (s *httpsNameServer) LookupIPv4(ctx context.Context, host string) ([]netip.Addr, error) {
 	if isLikelyLocalHostname(host) {
 		return s.local.LookupIPv4(ctx, host)
 	}
@@ -114,7 +116,7 @@ func (s *httpsNameServer) LookupIPv4(ctx context.Context, host string) ([]net.IP
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("doh http %s", resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDoHResponseBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +139,7 @@ func buildDNSQuery(host string) ([]byte, error) {
 	return builder.Finish()
 }
 
-func parseDNSAnswerIPv4s(resp []byte) ([]net.IP, error) {
+func parseDNSAnswerIPv4s(resp []byte) ([]netip.Addr, error) {
 	var parser dnsmessage.Parser
 	header, err := parser.Start(resp)
 	if err != nil {
@@ -149,11 +151,11 @@ func parseDNSAnswerIPv4s(resp []byte) ([]net.IP, error) {
 	if err := parser.SkipAllQuestions(); err != nil {
 		return nil, err
 	}
-	var ips []net.IP
+	var addrs []netip.Addr
 	for {
 		h, err := parser.AnswerHeader()
 		if errors.Is(err, dnsmessage.ErrSectionDone) {
-			return ips, nil
+			return addrs, nil
 		}
 		if err != nil {
 			return nil, err
@@ -168,6 +170,6 @@ func parseDNSAnswerIPv4s(resp []byte) ([]net.IP, error) {
 		if err != nil {
 			return nil, err
 		}
-		ips = append(ips, net.IP(body.A[:]))
+		addrs = append(addrs, netip.AddrFrom4(body.A))
 	}
 }
