@@ -253,7 +253,7 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 			return
 		}
 		logUserInfo("Server/Reverse", label, "session start")
-		if err := reverse.HandleServerSession(tunnelConn, userHash, revMgr, msg.Payload); err != nil {
+		if err := reverse.HandleServerSession(tunnelConn, revMgr, msg.Payload); err != nil {
 			logUserWarn("Server/Reverse", label, "session end: %v", err)
 		} else {
 			logUserInfo("Server/Reverse", label, "session end")
