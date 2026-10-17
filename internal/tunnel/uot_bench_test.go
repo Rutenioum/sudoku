@@ -42,7 +42,7 @@ func (c *cycleReader) Read(p []byte) (int, error) {
 }
 
 func uotBenchFrame(ap netip.AddrPort, payloadLen int) []byte {
-	addr := appendUoTAddrPort(nil, ap)
+	addr := protocol.AppendAddrPort(nil, ap)
 	frame := binary.BigEndian.AppendUint16(nil, uint16(len(addr)))
 	frame = binary.BigEndian.AppendUint16(frame, uint16(payloadLen))
 	frame = append(frame, addr...)

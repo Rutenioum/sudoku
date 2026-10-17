@@ -85,39 +85,16 @@ func joinDomainPort(domain []byte, port uint16) string {
 
 // appendSocks5UDPHeader appends RSV, FRAG and the ATYP/ADDR/PORT of a reply that came from ap.
 func appendSocks5UDPHeader(dst []byte, ap netip.AddrPort) []byte {
-	dst = append(dst, 0x00, 0x00, 0x00)
-	a := ap.Addr().Unmap()
-	if a.Is4() {
-		v := a.As4()
-		dst = append(dst, protocol.AddrTypeIPv4)
-		dst = append(dst, v[:]...)
-	} else {
-		v := a.As16()
-		dst = append(dst, protocol.AddrTypeIPv6)
-		dst = append(dst, v[:]...)
-	}
-	return binary.BigEndian.AppendUint16(dst, ap.Port())
-}
-
-type appendWriter struct{ b []byte }
-
-func (w *appendWriter) Write(p []byte) (int, error) {
-	w.b = append(w.b, p...)
-	return len(p), nil
+	return protocol.AppendAddrPort(append(dst, 0x00, 0x00, 0x00), ap)
 }
 
 // appendUDPResponse appends a SOCKS5 UDP reply for a datagram that came from addr (host:port); ok is
 // false when addr cannot be encoded.
 func appendUDPResponse(dst []byte, addr string, payload []byte) (_ []byte, ok bool) {
 	start := len(dst)
-	if ap, err := netip.ParseAddrPort(addr); err == nil {
-		dst = appendSocks5UDPHeader(dst, ap)
-	} else {
-		w := appendWriter{append(dst, 0x00, 0x00, 0x00)}
-		if err := protocol.WriteAddress(&w, addr); err != nil {
-			return dst[:start], false
-		}
-		dst = w.b
+	dst, err := protocol.AppendAddress(append(dst, 0x00, 0x00, 0x00), addr)
+	if err != nil {
+		return dst[:start], false
 	}
 	return append(dst, payload...), true
 }

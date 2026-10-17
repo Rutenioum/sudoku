@@ -182,7 +182,13 @@ func (s *uotClientSession) relayClientDatagram(from netip.AddrPort, pkt []byte) 
 	}
 
 	if decision.shouldProxy() {
-		if err := s.uotWriter.WriteDatagram(req.destAddr, req.payload); err != nil {
+		var err error
+		if req.literal.IsValid() {
+			err = s.uotWriter.WriteAddrPort(req.literal, req.payload)
+		} else {
+			err = s.uotWriter.WriteDatagram(req.destAddr, req.payload)
+		}
+		if err != nil {
 			return err
 		}
 	}

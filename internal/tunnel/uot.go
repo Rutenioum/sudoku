@@ -42,20 +42,6 @@ type UoTDialer interface {
 	DialUDPOverTCP() (net.Conn, error)
 }
 
-func appendUoTAddrPort(dst []byte, ap netip.AddrPort) []byte {
-	a := ap.Addr().Unmap().WithZone("")
-	if a.Is4() {
-		v := a.As4()
-		dst = append(dst, protocol.AddrTypeIPv4)
-		dst = append(dst, v[:]...)
-	} else {
-		v := a.As16()
-		dst = append(dst, protocol.AddrTypeIPv6)
-		dst = append(dst, v[:]...)
-	}
-	return binary.BigEndian.AppendUint16(dst, ap.Port())
-}
-
 const maxUoTPending = 256 * 1024
 
 // UoTWriter queues datagram frames and flushes everything queued with one write, so a backlog
@@ -161,8 +147,9 @@ func (u *UoTWriter) WriteDatagram(addr string, payload []byte) error {
 	return u.enqueue(func(b []byte) ([]byte, error) { return protocol.AppendAddress(b, addr) }, payload)
 }
 
-func (u *UoTWriter) writeAddrPort(ap netip.AddrPort, payload []byte) error {
-	return u.enqueue(func(b []byte) ([]byte, error) { return appendUoTAddrPort(b, ap), nil }, payload)
+// WriteAddrPort queues a datagram for an IP destination, skipping the string round trip of WriteDatagram.
+func (u *UoTWriter) WriteAddrPort(ap netip.AddrPort, payload []byte) error {
+	return u.enqueue(func(b []byte) ([]byte, error) { return protocol.AppendAddrPort(b, ap), nil }, payload)
 }
 
 // UoTReader reads datagram frames from a UoT tunnel into one buffer that is reused across calls.
@@ -349,7 +336,7 @@ func HandleUoTServer(conn net.Conn) error {
 				closeAll(err)
 				return
 			}
-			if err := uw.writeAddrPort(ap, buf[:n]); err != nil {
+			if err := uw.WriteAddrPort(ap, buf[:n]); err != nil {
 				closeAll(err)
 				return
 			}

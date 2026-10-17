@@ -60,23 +60,29 @@ func AppendAddress(dst []byte, rawAddr string) ([]byte, error) {
 	}
 
 	if ip, ok := parseIPLiteral(host); ok {
-		if ip = ip.Unmap(); ip.Is4() {
-			v := ip.As4()
-			dst = append(dst, AddrTypeIPv4)
-			dst = append(dst, v[:]...)
-		} else {
-			v := ip.As16()
-			dst = append(dst, AddrTypeIPv6)
-			dst = append(dst, v[:]...)
-		}
-	} else {
-		if len(host) > 255 {
-			return dst, errors.New("domain too long")
-		}
-		dst = append(dst, AddrTypeDomain, byte(len(host)))
-		dst = append(dst, host...)
+		return AppendAddrPort(dst, netip.AddrPortFrom(ip, uint16(port))), nil
 	}
+	if len(host) > 255 {
+		return dst, errors.New("domain too long")
+	}
+	dst = append(dst, AddrTypeDomain, byte(len(host)))
+	dst = append(dst, host...)
 	return binary.BigEndian.AppendUint16(dst, uint16(port)), nil
+}
+
+// AppendAddrPort appends the encoding of an IP destination to dst. IPv4-mapped IPv6 addresses
+// are encoded as IPv4 and zones are dropped.
+func AppendAddrPort(dst []byte, ap netip.AddrPort) []byte {
+	if ip := ap.Addr().Unmap(); ip.Is4() {
+		v := ip.As4()
+		dst = append(dst, AddrTypeIPv4)
+		dst = append(dst, v[:]...)
+	} else {
+		v := ip.As16()
+		dst = append(dst, AddrTypeIPv6)
+		dst = append(dst, v[:]...)
+	}
+	return binary.BigEndian.AppendUint16(dst, ap.Port())
 }
 
 // parseIPLiteral is netip.ParseAddr, except that hosts which cannot be IP literals are rejected
