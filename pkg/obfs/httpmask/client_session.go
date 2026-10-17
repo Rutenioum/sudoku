@@ -47,7 +47,11 @@ func dialSession(ctx context.Context, serverAddress string, opts TunnelDialOptio
 	headerHost := canonicalHeaderHost(urlHost, scheme)
 	httpClient := newHTTPClient(urlHost, dialAddr, serverName, scheme, 32, multiplexEnabled(opts.Multiplex))
 
-	authorizeURL := (&url.URL{Scheme: scheme, Host: urlHost, Path: joinPathRoot(opts.PathRoot, "/session")}).String()
+	endpoint := func(path, rawQuery string) string {
+		return (&url.URL{Scheme: scheme, Host: urlHost, Path: joinPathRoot(opts.PathRoot, path), RawQuery: rawQuery}).String()
+	}
+
+	authorizeURL := endpoint(sessionPath, "")
 	if opts.EarlyHandshake != nil && len(opts.EarlyHandshake.RequestPayload) > 0 {
 		authorizeURL, err = setEarlyDataQuery(authorizeURL, opts.EarlyHandshake.RequestPayload)
 		if err != nil {
@@ -93,10 +97,11 @@ func dialSession(ctx context.Context, serverAddress string, opts TunnelDialOptio
 		}
 	}
 
-	pushURL := (&url.URL{Scheme: scheme, Host: urlHost, Path: joinPathRoot(opts.PathRoot, "/api/v1/upload"), RawQuery: "token=" + url.QueryEscape(token)}).String()
-	pullURL := (&url.URL{Scheme: scheme, Host: urlHost, Path: joinPathRoot(opts.PathRoot, "/stream"), RawQuery: "token=" + url.QueryEscape(token)}).String()
-	finURL := (&url.URL{Scheme: scheme, Host: urlHost, Path: joinPathRoot(opts.PathRoot, "/api/v1/upload"), RawQuery: "token=" + url.QueryEscape(token) + "&fin=1"}).String()
-	closeURL := (&url.URL{Scheme: scheme, Host: urlHost, Path: joinPathRoot(opts.PathRoot, "/api/v1/upload"), RawQuery: "token=" + url.QueryEscape(token) + "&close=1"}).String()
+	tokenQuery := "token=" + url.QueryEscape(token)
+	pushURL := endpoint(uploadPath, tokenQuery)
+	pullURL := endpoint(pullPath, tokenQuery)
+	finURL := endpoint(uploadPath, tokenQuery+"&fin=1")
+	closeURL := endpoint(uploadPath, tokenQuery+"&close=1")
 	keepPreconnected = true
 
 	return &sessionDialInfo{
@@ -109,49 +114,51 @@ func dialSession(ctx context.Context, serverAddress string, opts TunnelDialOptio
 	}, nil
 }
 
-func sendSessionControl(client *http.Client, controlURL, headerHost string, mode TunnelMode) error {
-	const maxAttempts = 3
+const (
+	controlMaxAttempts    = 3
+	controlTimeout        = 5 * time.Second
+	controlInitialBackoff = 50 * time.Millisecond
+)
 
-	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// sendSessionControl posts a fin/close request, retrying transient failures.
+func sendSessionControl(client *http.Client, controlURL, headerHost string, mode TunnelMode) error {
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
 	defer cancel()
 
-	backoff := 50 * time.Millisecond
-	for attempt := 0; ; attempt++ {
-		req, err := http.NewRequestWithContext(closeCtx, http.MethodPost, controlURL, nil)
-		if err != nil {
+	backoff := controlInitialBackoff
+	for attempt := 1; ; attempt++ {
+		retryable, err := postSessionControl(ctx, client, controlURL, headerHost, mode)
+		if err == nil || !retryable || attempt >= controlMaxAttempts {
 			return err
 		}
-		req.Host = headerHost
-		applyTunnelHeaders(req.Header, headerHost, mode)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			if closeCtx.Err() == nil && (isDialError(err) || isRetryableHTTPTransportError(err) || errors.Is(err, context.DeadlineExceeded)) && attempt+1 < maxAttempts {
-				if err := waitRetry(closeCtx.Done(), nil, backoff); err != nil {
-					return err
-				}
-				backoff *= 2
-				continue
-			}
+		if err := waitRetry(ctx.Done(), nil, backoff); err != nil {
 			return err
 		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4*1024))
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			// A 403/404/410 means the server already discarded the session.
-			// Treat that as an idempotent close success regardless of attempt.
-			if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
-				return nil
-			}
-			if isRetryableStatusCode(resp.StatusCode) && attempt+1 < maxAttempts {
-				if err := waitRetry(closeCtx.Done(), nil, backoff); err != nil {
-					return err
-				}
-				backoff *= 2
-				continue
-			}
-			return statusError(resp)
-		}
-		return nil
+		backoff *= 2
 	}
+}
+
+func postSessionControl(ctx context.Context, client *http.Client, controlURL, headerHost string, mode TunnelMode) (retryable bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlURL, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Host = headerHost
+	applyTunnelHeaders(req.Header, headerHost, mode)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		retryable = ctx.Err() == nil && (isDialError(err) || isRetryableHTTPTransportError(err) || errors.Is(err, context.DeadlineExceeded))
+		return retryable, err
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4*1024))
+	_ = resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		return false, nil
+	case resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusNotFound, resp.StatusCode == http.StatusGone:
+		// The server already discarded the session, so closing it again succeeded.
+		return false, nil
+	}
+	return isRetryableStatusCode(resp.StatusCode), statusError(resp)
 }
