@@ -26,6 +26,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -94,161 +95,99 @@ func (m *MockDialer) Dial(destAddrStr string) (net.Conn, error) {
 	return NewMockConn(nil), nil
 }
 
-func TestDialTarget_PACUnmatchedHostProxiesWithoutLocalDNS(t *testing.T) {
-	geoMgr := newRuleManagerForTest(t, "payload:\n  - '1.2.3.0/24'\n")
-
-	oldDirectDial := directDial
-	oldResolveWithCache := resolveWithCache
-	t.Cleanup(func() {
-		directDial = oldDirectDial
-		resolveWithCache = oldResolveWithCache
-	})
-
-	directDial = func(network, addr string, timeout time.Duration) (net.Conn, error) {
-		t.Fatalf("unexpected direct dial: %s", addr)
-		return nil, nil
-	}
-	resolveWithCache = func(ctx context.Context, resolver *dnsutil.Resolver, addr string) (string, error) {
-		t.Fatalf("unexpected local resolve for unmatched PAC host: %s", addr)
-		return "", nil
-	}
-
-	cfg := &config.Config{ProxyMode: "pac"}
-	var proxyTarget string
-	dialer := &MockDialer{
-		DialFunc: func(destAddrStr string) (net.Conn, error) {
-			proxyTarget = destAddrStr
-			return NewMockConn(nil), nil
-		},
-	}
-
-	routeMgrs := &routeManagers{direct: geoMgr}
-	_, _, ok := dialTarget("TCP", nil, "foo.example:443", nil, cfg, routeMgrs, dialer, nil)
-	if !ok {
-		t.Fatalf("expected proxy dial success")
-	}
-	if proxyTarget != "foo.example:443" {
-		t.Fatalf("unexpected proxy target: %q", proxyTarget)
-	}
+// dialRecorder lists every outbound action dialTarget took.
+type dialRecorder struct {
+	direct, resolved, proxy []string
 }
 
-func TestDialTarget_PACDirectDomainStillResolvesForDirectDial(t *testing.T) {
-	geoMgr := newRuleManagerForTest(t, "payload:\n  - DOMAIN-SUFFIX,example.cn\n")
-
-	oldDirectDial := directDial
-	oldResolveWithCache := resolveWithCache
-	t.Cleanup(func() {
-		directDial = oldDirectDial
-		resolveWithCache = oldResolveWithCache
-	})
-
-	resolveWithCache = func(ctx context.Context, resolver *dnsutil.Resolver, addr string) (string, error) {
-		if addr != "foo.example.cn:443" {
-			t.Fatalf("unexpected resolve target: %s", addr)
-		}
-		return "1.2.3.4:443", nil
-	}
-
-	var dialed string
+// stubDialing replaces the direct dial and DNS hooks, resolving every name to resolveTo.
+func stubDialing(t *testing.T, resolveTo string) *dialRecorder {
+	t.Helper()
+	rec := &dialRecorder{}
+	oldDirectDial, oldResolveWithCache := directDial, resolveWithCache
+	t.Cleanup(func() { directDial, resolveWithCache = oldDirectDial, oldResolveWithCache })
 	directDial = func(network, addr string, timeout time.Duration) (net.Conn, error) {
-		dialed = addr
+		rec.direct = append(rec.direct, addr)
 		return NewMockConn(nil), nil
 	}
-
-	cfg := &config.Config{ProxyMode: "pac"}
-	dialer := &MockDialer{
-		DialFunc: func(destAddrStr string) (net.Conn, error) {
-			t.Fatalf("unexpected proxy dial: %s", destAddrStr)
-			return nil, nil
-		},
-	}
-
-	routeMgrs := &routeManagers{direct: geoMgr}
-	_, _, ok := dialTarget("TCP", nil, "foo.example.cn:443", nil, cfg, routeMgrs, dialer, nil)
-	if !ok {
-		t.Fatalf("expected direct dial success")
-	}
-	if dialed != "1.2.3.4:443" {
-		t.Fatalf("unexpected direct addr: %q", dialed)
-	}
-}
-
-func TestDialTarget_PACProxyRuleOverridesDirectRule(t *testing.T) {
-	directMgr := newRuleManagerForTest(t, "payload:\n  - DOMAIN-SUFFIX,example.cn\n")
-	proxyMgr := newRuleManagerForTest(t, "payload:\n  - DOMAIN-SUFFIX,video.example.cn\n")
-	cfg := &config.Config{ProxyMode: "pac"}
-
-	decision := decideRoute(cfg, &routeManagers{direct: directMgr}, "video.example.cn:443", nil)
-	if decision.action != routeActionDirect {
-		t.Fatalf("expected direct before proxy override, got %s", decision.action)
-	}
-
-	oldDirectDial := directDial
-	oldResolveWithCache := resolveWithCache
-	t.Cleanup(func() {
-		directDial = oldDirectDial
-		resolveWithCache = oldResolveWithCache
-	})
-
-	directDial = func(network, addr string, timeout time.Duration) (net.Conn, error) {
-		t.Fatalf("unexpected direct dial: %s", addr)
-		return nil, nil
-	}
 	resolveWithCache = func(ctx context.Context, resolver *dnsutil.Resolver, addr string) (string, error) {
-		t.Fatalf("unexpected local resolve for proxy override: %s", addr)
-		return "", nil
+		rec.resolved = append(rec.resolved, addr)
+		return resolveTo, nil
 	}
-
-	var proxyTarget string
-	dialer := &MockDialer{
-		DialFunc: func(destAddrStr string) (net.Conn, error) {
-			proxyTarget = destAddrStr
-			return NewMockConn(nil), nil
-		},
-	}
-
-	routeMgrs := &routeManagers{direct: directMgr, proxy: proxyMgr}
-	_, decision, ok := dialTarget("TCP", nil, "video.example.cn:443", nil, cfg, routeMgrs, dialer, nil)
-	if !ok {
-		t.Fatalf("expected proxy dial success")
-	}
-	if decision.action != routeActionProxy {
-		t.Fatalf("unexpected action: %s", decision.action)
-	}
-	if proxyTarget != "video.example.cn:443" {
-		t.Fatalf("unexpected proxy target: %q", proxyTarget)
-	}
+	return rec
 }
 
-func TestDialTarget_RejectSkipsOutboundDial(t *testing.T) {
-	rejectMgr := newRuleManagerForTest(t, "payload:\n  - DOMAIN-SUFFIX,ads.example\n")
-
-	oldDirectDial := directDial
-	t.Cleanup(func() {
-		directDial = oldDirectDial
-	})
-	directDial = func(network, addr string, timeout time.Duration) (net.Conn, error) {
-		t.Fatalf("unexpected direct dial: %s", addr)
-		return nil, nil
-	}
-
-	cfg := &config.Config{ProxyMode: "global"}
-	dialer := &MockDialer{
-		DialFunc: func(destAddrStr string) (net.Conn, error) {
-			t.Fatalf("unexpected proxy dial: %s", destAddrStr)
-			return nil, nil
+func TestDialTarget(t *testing.T) {
+	tests := []struct {
+		name                     string
+		mode                     string
+		directRules, proxyRules  string
+		rejectRules              string
+		target                   string
+		wantAction               routeAction
+		wantDialed               bool
+		wantDirect, wantResolved []string
+		wantProxy                []string
+	}{
+		{
+			name: "PAC unmatched host proxies without local DNS",
+			mode: "pac", directRules: "payload:\n  - '1.2.3.0/24'\n",
+			target: "foo.example:443", wantAction: routeActionProxy, wantDialed: true,
+			wantProxy: []string{"foo.example:443"},
+		},
+		{
+			name: "PAC direct domain is resolved locally for the direct dial",
+			mode: "pac", directRules: "payload:\n  - DOMAIN-SUFFIX,example.cn\n",
+			target: "foo.example.cn:443", wantAction: routeActionDirect, wantDialed: true,
+			wantResolved: []string{"foo.example.cn:443"}, wantDirect: []string{"1.2.3.4:443"},
+		},
+		{
+			name: "PAC proxy rule overrides direct rule",
+			mode: "pac", directRules: "payload:\n  - DOMAIN-SUFFIX,example.cn\n", proxyRules: "payload:\n  - DOMAIN-SUFFIX,video.example.cn\n",
+			target: "video.example.cn:443", wantAction: routeActionProxy, wantDialed: true,
+			wantProxy: []string{"video.example.cn:443"},
+		},
+		{
+			name: "reject skips every outbound dial",
+			mode: "global", rejectRules: "payload:\n  - DOMAIN-SUFFIX,ads.example\n",
+			target: "track.ads.example:443", wantAction: routeActionReject,
 		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := stubDialing(t, "1.2.3.4:443")
+			mgrs := &routeManagers{}
+			if tt.directRules != "" {
+				mgrs.direct = newRuleManagerForTest(t, tt.directRules)
+			}
+			if tt.proxyRules != "" {
+				mgrs.proxy = newRuleManagerForTest(t, tt.proxyRules)
+			}
+			if tt.rejectRules != "" {
+				mgrs.reject = newRuleManagerForTest(t, tt.rejectRules)
+			}
+			dialer := &MockDialer{DialFunc: func(destAddrStr string) (net.Conn, error) {
+				rec.proxy = append(rec.proxy, destAddrStr)
+				return NewMockConn(nil), nil
+			}}
 
-	conn, decision, ok := dialTarget("TCP", nil, "track.ads.example:443", nil, cfg, &routeManagers{reject: rejectMgr}, dialer, nil)
-	if ok {
-		t.Fatalf("expected reject route")
-	}
-	if conn != nil {
-		t.Fatalf("reject should not return a connection")
-	}
-	if decision.action != routeActionReject {
-		t.Fatalf("unexpected action: %s", decision.action)
+			conn, decision, ok := dialTarget("TCP", nil, tt.target, nil, &config.Config{ProxyMode: tt.mode}, mgrs, dialer, nil)
+
+			if ok != tt.wantDialed || (conn != nil) != tt.wantDialed {
+				t.Fatalf("ok = %v, conn = %v, want dialed = %v", ok, conn, tt.wantDialed)
+			}
+			if decision.action != tt.wantAction {
+				t.Fatalf("action = %s, want %s", decision.action, tt.wantAction)
+			}
+			for _, c := range []struct {
+				what      string
+				got, want []string
+			}{{"direct dials", rec.direct, tt.wantDirect}, {"local resolves", rec.resolved, tt.wantResolved}, {"proxy dials", rec.proxy, tt.wantProxy}} {
+				if !slices.Equal(c.got, c.want) {
+					t.Errorf("%s = %q, want %q", c.what, c.got, c.want)
+				}
+			}
+		})
 	}
 }
 
