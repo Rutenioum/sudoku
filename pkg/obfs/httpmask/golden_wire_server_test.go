@@ -125,7 +125,7 @@ func openGoldenSession(t *testing.T, srv *TunnelServer, tunnel, root string) (to
 		t.Fatalf("authorize reply has no token: %q", ex.reply)
 	}
 	t.Cleanup(func() {
-		srv.sessionClose(m[1])
+		srv.sessions.close(m[1])
 		_ = ex.conn.Close()
 	})
 	return m[1], ex.conn
@@ -215,7 +215,7 @@ func TestGoldenAuthorizeResponse(t *testing.T) {
 			if m == nil || len(m[1]) != 22 {
 				t.Fatalf("token missing or malformed in %q", ex.reply)
 			}
-			defer srv.sessionClose(m[1])
+			defer srv.sessions.close(m[1])
 			want := strings.Replace(goldenAuthorizeHeadFormat, "%d", strconv.Itoa(tc.wantLen), 1) + "token=" + m[1] + tc.wantTrail
 			if ex.reply != want {
 				t.Fatalf("authorize reply\n got %q\nwant %q", ex.reply, want)
@@ -249,7 +249,7 @@ func TestGoldenAuthorizeFailures(t *testing.T) {
 			if ex.result != HandleDone || ex.reply != tc.want {
 				t.Fatalf("result=%v reply=%q, want %q", ex.result, ex.reply, tc.want)
 			}
-			if srv.sessionHas("") || len(srv.sessions) != 0 {
+			if srv.sessions.has("") || srv.sessions.len() != 0 {
 				t.Fatalf("failed authorize leaked a session")
 			}
 		})
@@ -491,7 +491,7 @@ func TestGoldenControlRequests(t *testing.T) {
 			if _, err := app.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 				t.Fatalf("read after fin = %v, want EOF", err)
 			}
-			if !srv.sessionHas(token) {
+			if !srv.sessions.has(token) {
 				t.Fatalf("fin must keep the session for the downlink")
 			}
 		})
@@ -502,7 +502,7 @@ func TestGoldenControlRequests(t *testing.T) {
 			if ex.result != HandleDone || ex.reply != goldenReply200 {
 				t.Fatalf("result=%v reply=%q", ex.result, ex.reply)
 			}
-			if srv.sessionHas(token) {
+			if srv.sessions.has(token) {
 				t.Fatalf("close must remove the session")
 			}
 		})

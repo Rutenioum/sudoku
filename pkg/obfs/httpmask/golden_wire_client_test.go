@@ -224,10 +224,7 @@ func TestGoldenClientRequests(t *testing.T) {
 			_ = conn.Close()
 			deadline := time.Now().Add(5 * time.Second)
 			for time.Now().Before(deadline) {
-				srv.mu.Lock()
-				open := len(srv.sessions)
-				srv.mu.Unlock()
-				if open == 0 {
+				if srv.sessions.len() == 0 {
 					break
 				}
 				time.Sleep(10 * time.Millisecond)

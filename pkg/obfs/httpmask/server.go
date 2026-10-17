@@ -34,7 +34,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
@@ -70,68 +69,14 @@ type TunnelServer struct {
 	auth *tunnelAuth
 
 	pullReadTimeout time.Duration
-	sessionTTL      time.Duration
 	earlyHandshake  *TunnelServerEarlyHandshake
 
-	mu       sync.Mutex
-	sessions map[string]*tunnelSession
+	sessions *sessionStore
 }
 
 const tunnelHeaderReadTimeout = 15 * time.Second
 
-type tunnelSession struct {
-	conn           net.Conn
-	lastActive     time.Time
-	uplinkClosed   bool
-	downlinkClosed bool
-	closed         chan struct{}
-	closeOnce      sync.Once
-
-	uploadMu        sync.Mutex
-	nextUploadSeq   uint64
-	pullMu          sync.Mutex
-	pull            *sessionPullLease
-	pendingDownlink []byte // owned by the current pull lease holder
-}
-
-func newTunnelSession(conn net.Conn) *tunnelSession {
-	return &tunnelSession{conn: conn, closed: make(chan struct{}), lastActive: time.Now(), nextUploadSeq: 1}
-}
-
-type sessionPullLease struct {
-	cancel   chan struct{}
-	done     chan struct{}
-	stopOnce sync.Once
-	rawConn  net.Conn
-}
-
-func newSessionPullLease(rawConn net.Conn) *sessionPullLease {
-	return &sessionPullLease{
-		cancel:  make(chan struct{}),
-		done:    make(chan struct{}),
-		rawConn: rawConn,
-	}
-}
-
-func (p *sessionPullLease) stop() {
-	if p != nil {
-		p.stopOnce.Do(func() {
-			close(p.cancel)
-			if p.rawConn != nil {
-				_ = p.rawConn.Close()
-			}
-		})
-	}
-}
-
 var errUploadSequenceGap = errors.New("upload sequence gap")
-
-type sessionDirection uint8
-
-const (
-	sessionUplink sessionDirection = iota
-	sessionDownlink
-)
 
 func NewTunnelServer(opts TunnelServerOptions) *TunnelServer {
 	mode := normalizeTunnelMode(opts.Mode)
@@ -151,9 +96,8 @@ func NewTunnelServer(opts TunnelServerOptions) *TunnelServer {
 		passThroughOnReject: opts.PassThroughOnReject,
 		auth:                auth,
 		pullReadTimeout:     timeout,
-		sessionTTL:          ttl,
 		earlyHandshake:      opts.EarlyHandshake,
-		sessions:            make(map[string]*tunnelSession),
+		sessions:            newSessionStore(ttl),
 	}
 }
 
@@ -518,7 +462,7 @@ func (s *TunnelServer) handleStream(rawConn net.Conn, req *httpRequestHeader, he
 		}
 		// Stream Split Session: GET /stream?token=... => downlink poll.
 		if token != "" && path == "/stream" {
-			if s.passThroughOnReject && !s.sessionHas(token) {
+			if s.passThroughOnReject && !s.sessions.has(token) {
 				return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 			}
 			return s.streamPull(rawConn, token)
@@ -529,14 +473,14 @@ func (s *TunnelServer) handleStream(rawConn net.Conn, req *httpRequestHeader, he
 		// Stream Split Session: POST /api/v1/upload?token=... => uplink push.
 		if token != "" && path == "/api/v1/upload" {
 			if closeFlag {
-				s.sessionClose(token)
+				s.sessions.close(token)
 				return replyDone(rawConn, http.StatusOK, "")
 			}
 			if finFlag {
-				s.sessionCloseWrite(token)
+				s.sessions.closeUplink(token)
 				return replyDone(rawConn, http.StatusOK, "")
 			}
-			if s.passThroughOnReject && !s.sessionHas(token) {
+			if s.passThroughOnReject && !s.sessions.has(token) {
 				return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 			}
 			bodyReader, err := newRequestBodyReader(newPreBufferedConn(rawConn, buffered), req.headers)
@@ -686,7 +630,7 @@ func (s *TunnelServer) handlePoll(rawConn net.Conn, req *httpRequestHeader, head
 			return s.sessionAuthorize(rawConn, headerBytes, buffered, earlyPayload)
 		}
 		if path == "/stream" {
-			if s.passThroughOnReject && !s.sessionHas(token) {
+			if s.passThroughOnReject && !s.sessions.has(token) {
 				return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 			}
 			return s.pollPull(rawConn, token)
@@ -700,14 +644,14 @@ func (s *TunnelServer) handlePoll(rawConn net.Conn, req *httpRequestHeader, head
 			return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "missing token")
 		}
 		if closeFlag {
-			s.sessionClose(token)
+			s.sessions.close(token)
 			return replyDone(rawConn, http.StatusOK, "")
 		}
 		if finFlag {
-			s.sessionCloseWrite(token)
+			s.sessions.closeUplink(token)
 			return replyDone(rawConn, http.StatusOK, "")
 		}
-		if s.passThroughOnReject && !s.sessionHas(token) {
+		if s.passThroughOnReject && !s.sessions.has(token) {
 			return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 		}
 		bodyReader, err := newRequestBodyReader(newPreBufferedConn(rawConn, buffered), req.headers)
@@ -756,14 +700,10 @@ func (s *TunnelServer) sessionAuthorize(rawConn net.Conn, headerBytes, buffered,
 		}
 	}
 
-	s.mu.Lock()
-	s.sessions[token] = newTunnelSession(c2)
-	s.mu.Unlock()
-
-	go s.reapLater(token)
+	s.sessions.add(token, c2)
 
 	if err := writeTokenHTTPResponse(rawConn, token, responsePayload); err != nil {
-		s.sessionClose(token)
+		s.sessions.close(token)
 		_ = rawConn.Close()
 		return HandleDone, nil, err
 	}
@@ -777,154 +717,6 @@ func newSessionToken() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b[:]), nil
-}
-
-func (s *TunnelServer) reapLater(token string) {
-	ttl := s.sessionTTL
-
-	timer := time.NewTimer(ttl)
-	defer timer.Stop()
-
-	for {
-		s.mu.Lock()
-		sess, ok := s.sessions[token]
-		s.mu.Unlock()
-		if !ok {
-			return
-		}
-
-		select {
-		case <-timer.C:
-		case <-sess.closed:
-			return
-		}
-
-		s.mu.Lock()
-		sess, ok = s.sessions[token]
-		if !ok {
-			s.mu.Unlock()
-			return
-		}
-		idle := time.Since(sess.lastActive)
-		s.mu.Unlock()
-
-		// Pull ownership has its own lock. Do not take it while holding s.mu:
-		// pull takeover validates the session while holding pullMu.
-		sess.pullMu.Lock()
-		active := sess.pull != nil
-		sess.pullMu.Unlock()
-
-		s.mu.Lock()
-		if s.sessions[token] != sess {
-			s.mu.Unlock()
-			return
-		}
-		if idle >= ttl && !active {
-			delete(s.sessions, token)
-			s.mu.Unlock()
-			sess.pullMu.Lock()
-			lease := sess.pull
-			sess.pullMu.Unlock()
-			lease.stop()
-			_ = sess.conn.Close()
-			return
-		}
-		next := ttl - idle
-		if active && next < ttl {
-			next = ttl
-		}
-		s.mu.Unlock()
-
-		// Avoid a tight loop under high-frequency activity; we only need best-effort cleanup.
-		if next < 50*time.Millisecond {
-			next = 50 * time.Millisecond
-		}
-		timer.Reset(next)
-	}
-}
-
-func (s *TunnelServer) sessionHas(token string) bool {
-	s.mu.Lock()
-	_, ok := s.sessions[token]
-	s.mu.Unlock()
-	return ok
-}
-
-func (s *TunnelServer) sessionGet(token string) (*tunnelSession, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess, ok := s.sessions[token]
-	if !ok {
-		return nil, false
-	}
-	sess.lastActive = time.Now()
-	return sess, true
-}
-
-func (s *TunnelServer) sessionTouch(token string, sess *tunnelSession) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, ok := s.sessions[token]
-	if !ok || current != sess {
-		return false
-	}
-	sess.lastActive = time.Now()
-	return true
-}
-
-func (s *TunnelServer) sessionClose(token string) {
-	s.mu.Lock()
-	sess, ok := s.sessions[token]
-	if ok {
-		delete(s.sessions, token)
-	}
-	s.mu.Unlock()
-	if ok {
-		sess.closeOnce.Do(func() { close(sess.closed) })
-		sess.pullMu.Lock()
-		lease := sess.pull
-		sess.pullMu.Unlock()
-		lease.stop()
-		_ = sess.conn.Close()
-	}
-}
-
-func (s *TunnelServer) sessionCloseWrite(token string) {
-	s.sessionHalfClose(token, sessionUplink)
-}
-
-func (s *TunnelServer) sessionHalfClose(token string, direction sessionDirection) {
-	var closeWrite, removed bool
-
-	s.mu.Lock()
-	sess, ok := s.sessions[token]
-	if !ok {
-		s.mu.Unlock()
-		return
-	}
-	sess.lastActive = time.Now()
-	switch direction {
-	case sessionUplink:
-		if !sess.uplinkClosed {
-			sess.uplinkClosed = true
-			closeWrite = true
-		}
-	case sessionDownlink:
-		sess.downlinkClosed = true
-	}
-	if sess.uplinkClosed && sess.downlinkClosed {
-		delete(s.sessions, token)
-		removed = true
-		sess.closeOnce.Do(func() { close(sess.closed) })
-	}
-	s.mu.Unlock()
-
-	if closeWrite {
-		_ = connutil.TryCloseWrite(sess.conn)
-	}
-	if removed {
-		_ = sess.conn.Close()
-	}
 }
 
 func parseUploadSequence(u *url.URL) (uint64, error) {
@@ -946,7 +738,7 @@ func (s *TunnelServer) writeSessionUpload(token string, sess *tunnelSession, seq
 	sess.uploadMu.Lock()
 	defer sess.uploadMu.Unlock()
 
-	if !s.sessionTouch(token, sess) {
+	if !s.sessions.touch(token, sess) {
 		return net.ErrClosed
 	}
 	switch {
@@ -978,7 +770,7 @@ func writeUploadResult(rawConn net.Conn, err error) (HandleResult, net.Conn, err
 }
 
 func (s *TunnelServer) pollPush(rawConn net.Conn, token string, sequence uint64, body io.Reader) (HandleResult, net.Conn, error) {
-	sess, ok := s.sessionGet(token)
+	sess, ok := s.sessions.get(token)
 	if !ok {
 		return replyDone(rawConn, http.StatusForbidden, "forbidden")
 	}
@@ -1007,7 +799,7 @@ func (s *TunnelServer) pollPush(rawConn net.Conn, token string, sequence uint64,
 
 	if err := s.writeSessionUpload(token, sess, sequence, decodedPayload.Bytes()); err != nil {
 		if !errors.Is(err, errUploadSequenceGap) {
-			s.sessionClose(token)
+			s.sessions.close(token)
 		}
 		return writeUploadResult(rawConn, err)
 	}
@@ -1016,7 +808,7 @@ func (s *TunnelServer) pollPush(rawConn net.Conn, token string, sequence uint64,
 }
 
 func (s *TunnelServer) streamPush(rawConn net.Conn, token string, sequence uint64, body io.Reader) (HandleResult, net.Conn, error) {
-	sess, ok := s.sessionGet(token)
+	sess, ok := s.sessions.get(token)
 	if !ok {
 		return replyDone(rawConn, http.StatusForbidden, "forbidden")
 	}
@@ -1032,7 +824,7 @@ func (s *TunnelServer) streamPush(rawConn net.Conn, token string, sequence uint6
 
 	if err := s.writeSessionUpload(token, sess, sequence, payload); err != nil {
 		if !errors.Is(err, errUploadSequenceGap) {
-			s.sessionClose(token)
+			s.sessions.close(token)
 		}
 		return writeUploadResult(rawConn, err)
 	}
@@ -1061,54 +853,17 @@ func (s *TunnelServer) pollPull(rawConn net.Conn, token string) (HandleResult, n
 	})
 }
 
-func (s *TunnelServer) beginSessionPull(token string, sess *tunnelSession, rawConn net.Conn) (*sessionPullLease, bool) {
-	for {
-		sess.pullMu.Lock()
-		if !s.sessionTouch(token, sess) {
-			sess.pullMu.Unlock()
-			return nil, false
-		}
-		previous := sess.pull
-		if previous == nil {
-			lease := newSessionPullLease(rawConn)
-			sess.pull = lease
-			sess.pullMu.Unlock()
-			return lease, true
-		}
-		previous.stop()
-		sess.pullMu.Unlock()
-
-		// Only one goroutine may read a session pipe. A new pull takes over a
-		// stale CDN response by waking its pending read before it starts, and
-		// re-checks because a concurrent newcomer may win the freed slot first.
-		_ = sess.conn.SetReadDeadline(time.Now())
-		<-previous.done
-	}
-}
-
-func (s *TunnelServer) endSessionPull(token string, sess *tunnelSession, lease *sessionPullLease) {
-	if lease == nil {
-		return
-	}
-	sess.pullMu.Lock()
-	if sess.pull == lease {
-		sess.pull = nil
-	}
-	sess.pullMu.Unlock()
-	close(lease.done)
-}
-
 func (s *TunnelServer) sessionPull(rawConn net.Conn, token string, keepalive bool, writePayload func(io.Writer, []byte) error) (HandleResult, net.Conn, error) {
-	sess, ok := s.sessionGet(token)
+	sess, ok := s.sessions.get(token)
 	if !ok {
 		return replyDone(rawConn, http.StatusForbidden, "forbidden")
 	}
 
-	lease, ok := s.beginSessionPull(token, sess, rawConn)
+	lease, ok := s.sessions.beginPull(token, sess, rawConn)
 	if !ok {
 		return replyDone(rawConn, http.StatusForbidden, "forbidden")
 	}
-	defer s.endSessionPull(token, sess, lease)
+	defer sess.endPull(lease)
 
 	if err := writeSessionPullResponseHeader(rawConn); err != nil {
 		_ = rawConn.Close()
@@ -1148,7 +903,7 @@ func (s *TunnelServer) sessionPull(rawConn net.Conn, token string, keepalive boo
 			}
 		}
 		if len(payload) > 0 {
-			if !s.sessionTouch(token, sess) {
+			if !s.sessions.touch(token, sess) {
 				return HandleDone, nil, nil
 			}
 			_ = rawConn.SetWriteDeadline(time.Now().Add(s.pullReadTimeout))
@@ -1178,16 +933,16 @@ func (s *TunnelServer) sessionPull(rawConn net.Conn, token string, keepalive boo
 			if keepalive {
 				_, _ = cw.Write([]byte("\n"))
 				_ = bw.Flush()
-				s.sessionTouch(token, sess)
+				s.sessions.touch(token, sess)
 			}
 			return HandleDone, nil, nil
 		}
 		if errors.Is(err, io.EOF) {
 			streamEOF = true
-			s.sessionHalfClose(token, sessionDownlink)
+			s.sessions.closeDownlink(token)
 			return HandleDone, nil, nil
 		}
-		s.sessionClose(token)
+		s.sessions.close(token)
 		return HandleDone, nil, nil
 	}
 }

@@ -215,7 +215,7 @@ func TestTunnelServer_Stream_SplitSession_PushPull(t *testing.T) {
 
 	token, stream := authorize()
 	t.Cleanup(func() {
-		srv.sessionClose(token)
+		srv.sessions.close(token)
 		_ = stream.Close()
 	})
 
@@ -317,8 +317,7 @@ func TestTunnelServer_UploadSequenceIsIdempotent(t *testing.T) {
 		_ = sessionConn.Close()
 	})
 
-	sess := newTunnelSession(sessionConn)
-	srv.sessions["session"] = sess
+	sess := srv.sessions.add("session", sessionConn)
 
 	firstRead := make(chan []byte, 1)
 	go func() {
@@ -357,13 +356,12 @@ func TestTunnelServer_PullLeaseHandoffIsExclusive(t *testing.T) {
 	})
 
 	const token = "session"
-	sess := newTunnelSession(sessionConn)
-	srv.sessions[token] = sess
+	sess := srv.sessions.add(token, sessionConn)
 
 	var holders, maxHolders atomic.Int32
 	var wg sync.WaitGroup
 	pull := func(holdUntilCancel bool) *sessionPullLease {
-		lease, ok := srv.beginSessionPull(token, sess, nil)
+		lease, ok := srv.sessions.beginPull(token, sess, nil)
 		if !ok {
 			t.Error("beginSessionPull refused a live session")
 			return nil
@@ -378,7 +376,7 @@ func TestTunnelServer_PullLeaseHandoffIsExclusive(t *testing.T) {
 				t.Error("pull was never taken over")
 			}
 			holders.Add(-1)
-			srv.endSessionPull(token, sess, lease)
+			sess.endPull(lease)
 		}
 		return lease
 	}
@@ -394,7 +392,7 @@ func TestTunnelServer_PullLeaseHandoffIsExclusive(t *testing.T) {
 	// Both newcomers are now parked waiting for the first pull to finish.
 	time.Sleep(50 * time.Millisecond)
 	holders.Add(-1)
-	srv.endSessionPull(token, sess, first)
+	sess.endPull(first)
 
 	time.Sleep(50 * time.Millisecond)
 	sess.pullMu.Lock()
@@ -420,7 +418,7 @@ func TestTunnelServer_NewPullTakesOverWithoutLosingDownlink(t *testing.T) {
 	})
 
 	const token = "session"
-	srv.sessions[token] = newTunnelSession(sessionConn)
+	srv.sessions.add(token, sessionConn)
 
 	firstClient, firstServer := net.Pipe()
 	firstDone := make(chan struct{})
@@ -523,19 +521,19 @@ func TestTunnelServer_SessionTTL_ReapsAfterIdle(t *testing.T) {
 
 	// Ensure the session is considered active right before the first TTL check, then becomes idle.
 	time.Sleep(ttl / 2)
-	if _, ok := srv.sessionGet(token); !ok {
+	if _, ok := srv.sessions.get(token); !ok {
 		t.Fatalf("session missing before reaping: %q", token)
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if !srv.sessionHas(token) {
+		if !srv.sessions.has(token) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	srv.sessionClose(token)
+	srv.sessions.close(token)
 	t.Fatalf("session not reaped: %q", token)
 }
 
