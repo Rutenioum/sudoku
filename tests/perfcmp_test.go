@@ -357,6 +357,8 @@ func perfScenarios() []perfScenario {
 		{"raw_aes_pure_down", interopScenario{AEAD: "aes-128-gcm"}, perfStream(1, 0)},
 		{"raw_none_packed_down", interopScenario{AEAD: "none", Packed: true}, perfStream(1, 0)},
 		{"raw_conns", pure, perfConns(16)},
+		{"raw_conns1", pure, perfConns(1)},
+		{"raw_conns64", pure, perfConns(64)},
 		{"raw_udp", pure, perfUDP(32)},
 		{"raw_idle_1000", pure, perfIdle(1000)},
 		{"mux_down_x8", mux, perfStream(8, 0)},
