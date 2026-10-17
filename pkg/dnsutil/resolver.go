@@ -136,8 +136,8 @@ func buildNameServers(specs []ServerOptions, timeout time.Duration) ([]nameServe
 	return servers, nil
 }
 
-// ResolveWithCache resolves addr with the process-wide system-DNS resolver.
-func ResolveWithCache(ctx context.Context, addr string) (string, error) {
+// Resolve resolves addr with the process-wide system-DNS resolver.
+func Resolve(ctx context.Context, addr string) (string, error) {
 	return defaultResolver.Resolve(ctx, addr)
 }
 

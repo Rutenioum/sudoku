@@ -35,7 +35,7 @@ var resolveWithCache = func(ctx context.Context, resolver *dnsutil.Resolver, add
 	if resolver != nil {
 		return resolver.Resolve(ctx, addr)
 	}
-	return dnsutil.ResolveWithCache(ctx, addr)
+	return dnsutil.Resolve(ctx, addr)
 }
 
 type routeAction uint8

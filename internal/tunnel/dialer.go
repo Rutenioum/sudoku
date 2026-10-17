@@ -132,7 +132,7 @@ func (d *BaseDialer) dial(ctx context.Context, uplinkMode obfsUplinkMode) (net.C
 		resolveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
-		serverAddr, err := dnsutil.ResolveWithCache(resolveCtx, d.Config.ServerAddress)
+		serverAddr, err := dnsutil.Resolve(resolveCtx, d.Config.ServerAddress)
 		if err != nil {
 			return nil, fmt.Errorf("resolve server address failed: %w", err)
 		}
