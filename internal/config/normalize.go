@@ -19,10 +19,33 @@ with this application without prior consent.
 */
 package config
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/SUDOKU-ASCII/sudoku/pkg/obfs/sudoku"
+)
 
 func normalizeLower(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// trimNonEmpty trims every element and drops the blanks, reusing the backing array.
+func trimNonEmpty(values []string) []string {
+	kept := values[:0]
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			kept = append(kept, v)
+		}
+	}
+	return kept
+}
+
+// normalizeASCII canonicalizes a valid ascii mode; unknown values are only lower-cased so Load stays lenient.
+func normalizeASCII(mode string) string {
+	if canonical, err := sudoku.NormalizeASCIIMode(mode); err == nil {
+		return canonical
+	}
+	return normalizeLower(mode)
 }
 
 func normalizeHTTPMaskMode(mode string) string {
