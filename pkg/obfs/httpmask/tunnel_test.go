@@ -479,36 +479,37 @@ func TestTunnelServer_SessionTTL_ReapsAfterIdle(t *testing.T) {
 	t.Fatalf("session not reaped: %q", token)
 }
 
-func TestPollConn_CloseWrite_NoPanic(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	const n = 1000
-	c := &pollConn{
-		ctx:    ctx,
-		cancel: cancel,
-		queuedConn: queuedConn{
-			rxc:         make(chan []byte, 1),
-			closed:      make(chan struct{}),
-			writeCh:     make(chan []byte, n),
-			writeClosed: make(chan struct{}),
-			localAddr:   &net.TCPAddr{},
-			remoteAddr:  &net.TCPAddr{},
-		},
-	}
+func TestQueuedConn_ConcurrentWriteCloseWrite_NoPanic(t *testing.T) {
+	const writers = 1000
+	c := newQueuedConn()
+	go func() {
+		for {
+			select {
+			case <-c.writeCh:
+			case <-c.closed:
+				return
+			}
+		}
+	}()
 
 	var wg sync.WaitGroup
-	wg.Add(n)
-	for i := 0; i < n; i++ {
+	wg.Add(writers)
+	for i := 0; i < writers; i++ {
 		go func() {
 			defer wg.Done()
 			_, _ = c.Write([]byte("x"))
 		}()
 	}
 
-	_ = c.CloseWrite()
-	_ = c.Close()
+	closeWriteDone := make(chan struct{})
+	go func() {
+		defer close(closeWriteDone)
+		_ = c.CloseWrite()
+	}()
 	wg.Wait()
+	c.completeWrite(nil)
+	<-closeWriteDone
+	_ = c.closeWithError(nil)
 }
 
 func startRawTunnelServer(t testing.TB, srv *TunnelServer) (addr string, stop func(), tunnelCh <-chan net.Conn) {
@@ -571,9 +572,9 @@ func TestDialStreamSplit_CloseWrite_SendsFIN(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := dialStreamSplit(ctx, addr, TunnelDialOptions{})
+	conn, err := dialStream(ctx, addr, TunnelDialOptions{})
 	if err != nil {
-		t.Fatalf("dialStreamSplit: %v", err)
+		t.Fatalf("dialStream: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -703,13 +704,13 @@ func TestDialStreamSplit_HonorsContextCancel(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err = dialStreamSplit(ctx, ln.Addr().String(), TunnelDialOptions{TLSEnabled: false})
+	_, err = dialStream(ctx, ln.Addr().String(), TunnelDialOptions{TLSEnabled: false})
 	close(holdConn)
 
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected context deadline exceeded, got %v", err)
 	}
 	if took := time.Since(start); took > 2*time.Second {
-		t.Fatalf("dialStreamSplit took too long: %s", took)
+		t.Fatalf("dialStream took too long: %s", took)
 	}
 }

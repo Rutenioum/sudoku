@@ -69,29 +69,21 @@ func newQueuedConn() queuedConn {
 }
 
 func (c *queuedConn) CloseWrite() error {
-	if c == nil || c.writeClosed == nil {
-		return nil
-	}
 	c.writeGate.Lock()
 	if !isClosedPipeChan(c.writeClosed) {
 		close(c.writeClosed)
 	}
 	c.writeGate.Unlock()
 
-	writeDone := c.writeDone
-	closed := c.closed
-	if writeDone == nil {
-		return nil
-	}
 	select {
-	case <-writeDone:
+	case <-c.writeDone:
 		return c.completedWriteErr()
 	default:
 	}
 	select {
-	case <-writeDone:
+	case <-c.writeDone:
 		return c.completedWriteErr()
-	case <-closed:
+	case <-c.closed:
 		return c.closedErr()
 	}
 }
@@ -104,9 +96,6 @@ func (c *queuedConn) completedWriteErr() error {
 }
 
 func (c *queuedConn) completeWrite(err error) {
-	if c == nil || c.writeDone == nil {
-		return
-	}
 	c.mu.Lock()
 	if c.writeErr == nil {
 		c.writeErr = err
@@ -116,9 +105,6 @@ func (c *queuedConn) completeWrite(err error) {
 }
 
 func (c *queuedConn) markReadEOF() {
-	if c == nil || c.readEOF == nil {
-		return
-	}
 	c.readEOFOnce.Do(func() { close(c.readEOF) })
 }
 
@@ -186,15 +172,6 @@ func (c *queuedConn) Write(b []byte) (n int, err error) {
 
 	payload := make([]byte, len(b))
 	copy(payload, b)
-	if c.writeClosed == nil {
-		select {
-		case c.writeCh <- payload:
-			return len(b), nil
-		case <-c.closed:
-			return 0, c.closedErr()
-		}
-	}
-
 	c.writeGate.RLock()
 	defer c.writeGate.RUnlock()
 	select {

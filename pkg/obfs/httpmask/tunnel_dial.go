@@ -415,13 +415,6 @@ func dialSession(ctx context.Context, serverAddress string, opts TunnelDialOptio
 func sendSessionControl(client *http.Client, controlURL, headerHost string, mode TunnelMode) error {
 	const maxAttempts = 3
 
-	if client == nil {
-		return errors.New("session control client is nil")
-	}
-	if controlURL == "" || headerHost == "" {
-		return errors.New("session control endpoint is empty")
-	}
-
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

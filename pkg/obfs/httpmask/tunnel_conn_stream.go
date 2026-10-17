@@ -31,11 +31,6 @@ import (
 	"time"
 )
 
-func dialStream(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
-	// "stream" mode uses split-stream to stay CDN-friendly by default.
-	return dialStreamSplit(ctx, serverAddress, opts)
-}
-
 type streamSplitConn struct {
 	queuedConn
 	readiness *tunnelReadiness
@@ -59,15 +54,13 @@ func (c *streamSplitConn) Close() error {
 func (c *streamSplitConn) closeWithError(err error) error {
 	_ = c.queuedConn.closeWithError(err)
 
-	if c.cancel != nil {
-		c.cancel()
-	}
+	c.cancel()
 
 	_ = sendSessionControl(c.client, c.closeURL, c.headerHost, TunnelModeStream)
 	return nil
 }
 
-func dialStreamSplit(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
+func dialStream(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
 	info, err := dialSession(ctx, serverAddress, opts, TunnelModeStream)
 	if err != nil {
 		return nil, err
@@ -115,10 +108,7 @@ func dialStreamSplit(ctx context.Context, serverAddress string, opts TunnelDialO
 }
 
 func (c *streamSplitConn) waitReady(ctx context.Context) error {
-	if err := c.readiness.wait(ctx, c.closed, c.closedErr); err != nil {
-		return err
-	}
-	return nil
+	return c.readiness.wait(ctx, c.closed, c.closedErr)
 }
 
 func (c *streamSplitConn) pullLoop() {

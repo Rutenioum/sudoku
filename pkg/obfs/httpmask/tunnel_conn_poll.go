@@ -50,9 +50,7 @@ type pollConn struct {
 
 func (c *pollConn) closeWithError(err error) error {
 	_ = c.queuedConn.closeWithError(err)
-	if c.cancel != nil {
-		c.cancel()
-	}
+	c.cancel()
 	_ = sendSessionControl(c.client, c.closeURL, c.headerHost, TunnelModePoll)
 	return nil
 }
@@ -109,10 +107,7 @@ func dialPoll(ctx context.Context, serverAddress string, opts TunnelDialOptions)
 }
 
 func (c *pollConn) waitReady(ctx context.Context) error {
-	if err := c.readiness.wait(ctx, c.closed, c.closedErr); err != nil {
-		return err
-	}
-	return nil
+	return c.readiness.wait(ctx, c.closed, c.closedErr)
 }
 
 func (c *pollConn) pullLoop() {
