@@ -21,6 +21,7 @@ package reverse
 
 import (
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -43,19 +44,38 @@ func newTestMux(t *testing.T) *tunnel.MuxClient {
 	return mc
 }
 
+func boolPtr(v bool) *bool { return &v }
+
+func TestParseRoutes(t *testing.T) {
+	got := parseRoutes([]config.ReverseRoute{
+		{Path: " /a ", Target: " t:1 ", HostHeader: " h.example ", StripPrefix: boolPtr(false)},
+		{Path: "/b", Target: "t:2", StripPrefix: boolPtr(true)},
+		{Path: "/c", Target: "t:3"},
+		{},
+	})
+	want := []routeSpec{
+		{prefix: "/a", target: "t:1", hostHeader: "h.example", stripPrefix: false},
+		{prefix: "/b", target: "t:2", stripPrefix: true},
+		{prefix: "/c", target: "t:3", stripPrefix: true},
+		{stripPrefix: true},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("parseRoutes = %+v, want %+v", got, want)
+	}
+}
+
 func TestRegisterSession(t *testing.T) {
-	boolPtr := func(v bool) *bool { return &v }
 
 	t.Run("argument errors", func(t *testing.T) {
 		mc := newTestMux(t)
 		routes := []config.ReverseRoute{{Path: "/a", Target: "t:1"}}
-		if err := (*Manager)(nil).RegisterSession("c", mc, routes); err == nil || err.Error() != "nil manager" {
+		if err := (*Manager)(nil).RegisterSession(mc, routes); err == nil || err.Error() != "nil manager" {
 			t.Errorf("nil manager: %v", err)
 		}
-		if err := NewManager().RegisterSession("c", nil, routes); err == nil || err.Error() != "nil mux client" {
+		if err := NewManager().RegisterSession(nil, routes); err == nil || err.Error() != "nil mux client" {
 			t.Errorf("nil mux: %v", err)
 		}
-		if err := NewManager().RegisterSession("c", mc, nil); err == nil || err.Error() != "no reverse routes" {
+		if err := NewManager().RegisterSession(mc, nil); err == nil || err.Error() != "no reverse routes" {
 			t.Errorf("no routes: %v", err)
 		}
 	})
@@ -63,7 +83,7 @@ func TestRegisterSession(t *testing.T) {
 	t.Run("registers http and tcp routes", func(t *testing.T) {
 		m := NewManager()
 		mc := newTestMux(t)
-		err := m.RegisterSession("c1", mc, []config.ReverseRoute{
+		err := m.RegisterSession(mc, []config.ReverseRoute{
 			{Path: " /a ", Target: " t:1 ", HostHeader: " h.example ", StripPrefix: boolPtr(false)},
 			{Path: "/b", Target: "t:2"},
 			{Path: "/skipped"},
@@ -76,17 +96,13 @@ func TestRegisterSession(t *testing.T) {
 		if len(m.routes) != 2 {
 			t.Fatalf("routes = %d, want 2 (empty-target path routes are dropped)", len(m.routes))
 		}
-		a := m.routes["/a"]
-		if a == nil || a.target != "t:1" || a.hostHeader != "h.example" || a.stripPrefix || a.mux != mc || a.proxy == nil {
+		if a := m.routes["/a"]; a == nil || a.target != "t:1" || a.mux != mc || a.proxy == nil {
 			t.Fatalf("route /a = %+v", a)
 		}
-		if b := m.routes["/b"]; b == nil || !b.stripPrefix || b.hostHeader != "" {
-			t.Fatalf("route /b = %+v (strip defaults to true)", b)
-		}
-		if m.tcp == nil || m.tcp.target != "tcp:3" || m.tcp.clientID != "c1" || m.tcp.mux != mc {
+		if m.tcp == nil || m.tcp.target != "tcp:3" || m.tcp.mux != mc {
 			t.Fatalf("tcp = %+v", m.tcp)
 		}
-		if err := m.RegisterSession("c1", mc, []config.ReverseRoute{{Path: "/z", Target: "t:9"}}); err == nil ||
+		if err := m.RegisterSession(mc, []config.ReverseRoute{{Path: "/z", Target: "t:9"}}); err == nil ||
 			err.Error() != "reverse session already registered" {
 			t.Fatalf("same mux twice: %v", err)
 		}
@@ -105,21 +121,22 @@ func TestRegisterSession(t *testing.T) {
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
 				m := NewManager()
-				if err := m.RegisterSession("first", newTestMux(t), []config.ReverseRoute{{Path: "/a", Target: "t:0"}, {Target: "tcp:0"}}); err != nil {
+				if err := m.RegisterSession(newTestMux(t), []config.ReverseRoute{{Path: "/a", Target: "t:0"}, {Target: "tcp:0"}}); err != nil {
 					t.Fatal(err)
 				}
-				err := m.RegisterSession("second", newTestMux(t), tc.routes)
+				tcp := m.tcp
+				err := m.RegisterSession(newTestMux(t), tc.routes)
 				if err == nil || err.Error() != tc.want {
 					t.Fatalf("err = %v, want %q", err, tc.want)
 				}
-				if len(m.routes) != 1 || len(m.sessions) != 1 || m.tcp == nil || m.tcp.clientID != "first" {
+				if len(m.routes) != 1 || len(m.sessions) != 1 || m.tcp != tcp {
 					t.Fatalf("state changed: routes=%d sessions=%d tcp=%+v", len(m.routes), len(m.sessions), m.tcp)
 				}
 			})
 		}
 
 		m := NewManager()
-		err := m.RegisterSession("c", newTestMux(t), []config.ReverseRoute{{Target: "tcp:1"}, {Target: "tcp:2"}})
+		err := m.RegisterSession(newTestMux(t), []config.ReverseRoute{{Target: "tcp:1"}, {Target: "tcp:2"}})
 		if err == nil || err.Error() != "reverse tcp route already set in this session" {
 			t.Fatalf("two tcp routes in one session: %v", err)
 		}
@@ -131,7 +148,7 @@ func TestRegisterSession(t *testing.T) {
 	t.Run("closing the mux unregisters its routes", func(t *testing.T) {
 		m := NewManager()
 		mc := newTestMux(t)
-		if err := m.RegisterSession("c", mc, []config.ReverseRoute{{Path: "/a", Target: "t:1"}, {Target: "tcp:2"}}); err != nil {
+		if err := m.RegisterSession(mc, []config.ReverseRoute{{Path: "/a", Target: "t:1"}, {Target: "tcp:2"}}); err != nil {
 			t.Fatal(err)
 		}
 		_ = mc.Close()
@@ -148,7 +165,7 @@ func TestRegisterSession(t *testing.T) {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-		if err := m.RegisterSession("c2", newTestMux(t), []config.ReverseRoute{{Path: "/a", Target: "t:1"}}); err != nil {
+		if err := m.RegisterSession(newTestMux(t), []config.ReverseRoute{{Path: "/a", Target: "t:1"}}); err != nil {
 			t.Fatalf("path should be reusable after unregister: %v", err)
 		}
 	})

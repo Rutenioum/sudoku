@@ -58,14 +58,6 @@ func HandleServerSession(conn net.Conn, userHash string, mgr *Manager, helloPayl
 		return fmt.Errorf("invalid reverse hello: %w", err)
 	}
 
-	clientID := strings.TrimSpace(hello.ClientID)
-	if clientID == "" {
-		clientID = strings.TrimSpace(userHash)
-	}
-	if clientID == "" {
-		clientID = "unknown"
-	}
-
 	if len(hello.Routes) == 0 {
 		return fmt.Errorf("reverse hello has no routes")
 	}
@@ -125,7 +117,7 @@ func HandleServerSession(conn net.Conn, userHash string, mgr *Manager, helloPayl
 		return fmt.Errorf("start reverse mux session failed: %w", err)
 	}
 
-	if err := mgr.RegisterSession(clientID, mux, hello.Routes); err != nil {
+	if err := mgr.RegisterSession(mux, hello.Routes); err != nil {
 		_ = mux.Close()
 		return err
 	}

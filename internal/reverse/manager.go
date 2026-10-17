@@ -39,25 +39,29 @@ type Manager struct {
 }
 
 type session struct {
-	clientID string
 	mux      *tunnel.MuxClient
 	prefixes []string
 	tcp      bool
 }
 
 type routeEntry struct {
-	prefix      string
-	target      string
-	stripPrefix bool
-	hostHeader  string
-	mux         *tunnel.MuxClient
-	proxy       *httputil.ReverseProxy
+	prefix string
+	target string
+	mux    *tunnel.MuxClient
+	proxy  *httputil.ReverseProxy
 }
 
 type tcpEntry struct {
-	clientID string
-	target   string
-	mux      *tunnel.MuxClient
+	target string
+	mux    *tunnel.MuxClient
+}
+
+// routeSpec is a client's reverse route with whitespace trimmed and defaults applied.
+type routeSpec struct {
+	prefix      string
+	target      string
+	hostHeader  string
+	stripPrefix bool
 }
 
 func NewManager() *Manager {
@@ -67,10 +71,23 @@ func NewManager() *Manager {
 	}
 }
 
+func parseRoutes(routes []config.ReverseRoute) []routeSpec {
+	specs := make([]routeSpec, len(routes))
+	for i, r := range routes {
+		specs[i] = routeSpec{
+			prefix:      strings.TrimSpace(r.Path),
+			target:      strings.TrimSpace(r.Target),
+			hostHeader:  strings.TrimSpace(r.HostHeader),
+			stripPrefix: r.StripPrefix == nil || *r.StripPrefix,
+		}
+	}
+	return specs
+}
+
 // RegisterSession registers a reverse client session and its routes.
 //
 // On conflict (same path prefix already registered), it returns an error.
-func (m *Manager) RegisterSession(clientID string, mux *tunnel.MuxClient, routes []config.ReverseRoute) error {
+func (m *Manager) RegisterSession(mux *tunnel.MuxClient, routes []config.ReverseRoute) error {
 	if m == nil {
 		return fmt.Errorf("nil manager")
 	}
@@ -81,79 +98,9 @@ func (m *Manager) RegisterSession(clientID string, mux *tunnel.MuxClient, routes
 		return fmt.Errorf("no reverse routes")
 	}
 
-	sess := &session{
-		clientID: clientID,
-		mux:      mux,
+	if err := m.addSession(mux, parseRoutes(routes)); err != nil {
+		return err
 	}
-
-	m.mu.Lock()
-	if _, ok := m.sessions[mux]; ok {
-		m.mu.Unlock()
-		return fmt.Errorf("reverse session already registered")
-	}
-	seenTCP := false
-	for _, r := range routes {
-		prefix := strings.TrimSpace(r.Path)
-		target := strings.TrimSpace(r.Target)
-		if prefix == "" {
-			if target == "" {
-				continue
-			}
-			// Path empty => raw TCP reverse on reverse.listen (no HTTP path prefix).
-			if seenTCP {
-				m.mu.Unlock()
-				return fmt.Errorf("reverse tcp route already set in this session")
-			}
-			seenTCP = true
-			if m.tcp != nil {
-				m.mu.Unlock()
-				return fmt.Errorf("reverse tcp route already registered")
-			}
-			continue
-		}
-		if _, ok := m.routes[prefix]; ok {
-			m.mu.Unlock()
-			return fmt.Errorf("reverse path already registered: %q", prefix)
-		}
-	}
-
-	for _, r := range routes {
-		prefix := strings.TrimSpace(r.Path)
-		target := strings.TrimSpace(r.Target)
-		if prefix == "" {
-			if target == "" {
-				continue
-			}
-			m.tcp = &tcpEntry{
-				clientID: clientID,
-				target:   target,
-				mux:      mux,
-			}
-			sess.tcp = true
-			continue
-		}
-		if target == "" {
-			continue
-		}
-		strip := true
-		if r.StripPrefix != nil {
-			strip = *r.StripPrefix
-		}
-		hostHeader := strings.TrimSpace(r.HostHeader)
-
-		entry := &routeEntry{
-			prefix:      prefix,
-			target:      target,
-			stripPrefix: strip,
-			hostHeader:  hostHeader,
-			mux:         mux,
-		}
-		entry.proxy = newRouteProxy(prefix, target, strip, hostHeader, mux)
-		m.routes[prefix] = entry
-		sess.prefixes = append(sess.prefixes, prefix)
-	}
-	m.sessions[mux] = sess
-	m.mu.Unlock()
 
 	go func() {
 		<-mux.Done()
@@ -161,6 +108,62 @@ func (m *Manager) RegisterSession(clientID string, mux *tunnel.MuxClient, routes
 		_ = mux.Close()
 	}()
 
+	return nil
+}
+
+func (m *Manager) addSession(mux *tunnel.MuxClient, specs []routeSpec) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.sessions[mux]; ok {
+		return fmt.Errorf("reverse session already registered")
+	}
+	if err := m.checkConflictsLocked(specs); err != nil {
+		return err
+	}
+
+	sess := &session{mux: mux}
+	for _, s := range specs {
+		switch {
+		case s.target == "":
+		case s.prefix == "":
+			m.tcp = &tcpEntry{target: s.target, mux: mux}
+			sess.tcp = true
+		default:
+			m.routes[s.prefix] = &routeEntry{
+				prefix: s.prefix,
+				target: s.target,
+				mux:    mux,
+				proxy:  newRouteProxy(s.prefix, s.target, s.stripPrefix, s.hostHeader, mux),
+			}
+			sess.prefixes = append(sess.prefixes, s.prefix)
+		}
+	}
+	m.sessions[mux] = sess
+	return nil
+}
+
+func (m *Manager) checkConflictsLocked(specs []routeSpec) error {
+	seenTCP := false
+	for _, s := range specs {
+		if s.prefix != "" {
+			if _, ok := m.routes[s.prefix]; ok {
+				return fmt.Errorf("reverse path already registered: %q", s.prefix)
+			}
+			continue
+		}
+		// Path empty => raw TCP reverse on reverse.listen (no HTTP path prefix).
+		if s.target == "" {
+			continue
+		}
+		if seenTCP {
+			return fmt.Errorf("reverse tcp route already set in this session")
+		}
+		seenTCP = true
+		if m.tcp != nil {
+			return fmt.Errorf("reverse tcp route already registered")
+		}
+	}
 	return nil
 }
 
