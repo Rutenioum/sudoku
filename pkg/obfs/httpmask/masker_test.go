@@ -21,6 +21,7 @@ package httpmask
 
 import (
 	"bufio"
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -70,18 +71,38 @@ func TestConsumeHeader_ReturnsConsumedData(t *testing.T) {
 				t.Errorf("ConsumeHeader() error = %v, wantErr %v", err, tt.wantErr)
 			}
 
-			// Verify consumed data matches the beginning of input
+			// Consumption must stop exactly after the blank line, leaving the body unread.
 			if !strings.HasPrefix(tt.input, string(consumed)) {
 				t.Errorf("ConsumeHeader() consumed data mismatch.\nGot: %q\nInput starts with: %q", consumed, tt.input[:len(consumed)])
 			}
-
-			// If success, verify we consumed up to the empty line
-			if !tt.wantErr {
-				expectedHeaderEnd := "\r\n\r\n"
-				if !strings.Contains(string(consumed), expectedHeaderEnd) {
-					t.Errorf("ConsumeHeader() did not consume full header. Got: %q", consumed)
-				}
+			if tt.wantErr {
+				return
+			}
+			header, body, _ := strings.Cut(tt.input, "\r\n\r\n")
+			if want := header + "\r\n\r\n"; string(consumed) != want {
+				t.Errorf("ConsumeHeader() consumed %q, want %q", consumed, want)
+			}
+			rest, _ := r.ReadString('\n')
+			if rest != body {
+				t.Errorf("ConsumeHeader() left %q in the reader, want %q", rest, body)
 			}
 		})
+	}
+}
+
+func TestWriteRandomRequestHeader(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteRandomRequestHeaderWithPathRoot(&buf, "example.com", ""); err != nil {
+		t.Fatalf("WriteRandomRequestHeaderWithPathRoot error: %v", err)
+	}
+	raw := buf.String()
+	if !(strings.HasPrefix(raw, "POST ") || strings.HasPrefix(raw, "GET ")) {
+		t.Fatalf("invalid request line: %q", raw)
+	}
+	if !strings.Contains(raw, "Host: example.com") {
+		t.Fatalf("missing host header")
+	}
+	if !strings.Contains(raw, "\r\n\r\n") {
+		t.Fatalf("missing header terminator")
 	}
 }

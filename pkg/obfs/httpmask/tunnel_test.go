@@ -619,131 +619,77 @@ func startRawTunnelServer(t testing.TB, srv *TunnelServer) (addr string, stop fu
 	return ln.Addr().String(), stop, tch
 }
 
-func TestDialStreamSplit_CloseWrite_SendsFIN(t *testing.T) {
-	srv := NewTunnelServer(TunnelServerOptions{
-		Mode:            "auto",
-		PullReadTimeout: 50 * time.Millisecond,
-		SessionTTL:      2 * time.Second,
-	})
-
-	addr, stop, tunnelCh := startRawTunnelServer(t, srv)
-	defer stop()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := dialStream(ctx, addr, TunnelDialOptions{})
-	if err != nil {
-		t.Fatalf("dialStream: %v", err)
+func TestDial_CloseWrite_SendsFIN(t *testing.T) {
+	dials := map[string]func(context.Context, string, TunnelDialOptions) (net.Conn, error){
+		"stream": dialStream,
+		"poll":   dialPoll,
 	}
-	t.Cleanup(func() { _ = conn.Close() })
+	for name, dial := range dials {
+		t.Run(name, func(t *testing.T) {
+			srv := NewTunnelServer(TunnelServerOptions{
+				Mode:            "auto",
+				PullReadTimeout: 50 * time.Millisecond,
+				SessionTTL:      2 * time.Second,
+			})
 
-	var tunnel net.Conn
-	select {
-	case tunnel = <-tunnelCh:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timeout waiting for server tunnel conn")
-	}
-	t.Cleanup(func() { _ = tunnel.Close() })
+			addr, stop, tunnelCh := startRawTunnelServer(t, srv)
+			defer stop()
 
-	payload := []byte("hello")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 
-	readDone := make(chan struct{})
-	var (
-		got  []byte
-		rerr error
-	)
-	go func() {
-		_ = tunnel.SetReadDeadline(time.Now().Add(3 * time.Second))
-		got, rerr = io.ReadAll(tunnel)
-		close(readDone)
-	}()
+			conn, err := dial(ctx, addr, TunnelDialOptions{})
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
 
-	if _, err := conn.Write(payload); err != nil {
-		t.Fatalf("client write: %v", err)
-	}
-	cw, ok := conn.(interface{ CloseWrite() error })
-	if !ok {
-		t.Fatalf("client conn missing CloseWrite")
-	}
-	_ = cw.CloseWrite()
+			var tunnel net.Conn
+			select {
+			case tunnel = <-tunnelCh:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("timeout waiting for server tunnel conn")
+			}
+			t.Cleanup(func() { _ = tunnel.Close() })
 
-	select {
-	case <-readDone:
-	case <-time.After(4 * time.Second):
-		t.Fatalf("server read timeout (FIN not delivered)")
-	}
-	if rerr != nil {
-		t.Fatalf("server read error: %v", rerr)
-	}
-	if !bytes.Equal(got, payload) {
-		t.Fatalf("server payload mismatch: got=%q want=%q", string(got), string(payload))
-	}
-}
+			payload := []byte("hello")
 
-func TestDialPoll_CloseWrite_SendsFIN(t *testing.T) {
-	srv := NewTunnelServer(TunnelServerOptions{
-		Mode:            "auto",
-		PullReadTimeout: 50 * time.Millisecond,
-		SessionTTL:      2 * time.Second,
-	})
+			readDone := make(chan struct{})
+			var (
+				got  []byte
+				rerr error
+			)
+			go func() {
+				_ = tunnel.SetReadDeadline(time.Now().Add(3 * time.Second))
+				got, rerr = io.ReadAll(tunnel)
+				close(readDone)
+			}()
 
-	addr, stop, tunnelCh := startRawTunnelServer(t, srv)
-	defer stop()
+			if _, err := conn.Write(payload); err != nil {
+				t.Fatalf("client write: %v", err)
+			}
+			cw, ok := conn.(interface{ CloseWrite() error })
+			if !ok {
+				t.Fatalf("client conn missing CloseWrite")
+			}
+			_ = cw.CloseWrite()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := dialPoll(ctx, addr, TunnelDialOptions{})
-	if err != nil {
-		t.Fatalf("dialPoll: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-
-	var tunnel net.Conn
-	select {
-	case tunnel = <-tunnelCh:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timeout waiting for server tunnel conn")
-	}
-	t.Cleanup(func() { _ = tunnel.Close() })
-
-	payload := []byte("hello")
-
-	readDone := make(chan struct{})
-	var (
-		got  []byte
-		rerr error
-	)
-	go func() {
-		_ = tunnel.SetReadDeadline(time.Now().Add(3 * time.Second))
-		got, rerr = io.ReadAll(tunnel)
-		close(readDone)
-	}()
-
-	if _, err := conn.Write(payload); err != nil {
-		t.Fatalf("client write: %v", err)
-	}
-	cw, ok := conn.(interface{ CloseWrite() error })
-	if !ok {
-		t.Fatalf("client conn missing CloseWrite")
-	}
-	_ = cw.CloseWrite()
-
-	select {
-	case <-readDone:
-	case <-time.After(4 * time.Second):
-		t.Fatalf("server read timeout (FIN not delivered)")
-	}
-	if rerr != nil {
-		t.Fatalf("server read error: %v", rerr)
-	}
-	if !bytes.Equal(got, payload) {
-		t.Fatalf("server payload mismatch: got=%q want=%q", string(got), string(payload))
+			select {
+			case <-readDone:
+			case <-time.After(4 * time.Second):
+				t.Fatalf("server read timeout (FIN not delivered)")
+			}
+			if rerr != nil {
+				t.Fatalf("server read error: %v", rerr)
+			}
+			if !bytes.Equal(got, payload) {
+				t.Fatalf("server payload mismatch: got=%q want=%q", string(got), string(payload))
+			}
+		})
 	}
 }
 
-func TestDialStreamSplit_HonorsContextCancel(t *testing.T) {
+func TestDialStream_HonorsContextCancel(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
