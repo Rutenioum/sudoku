@@ -33,6 +33,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -344,6 +345,65 @@ func TestTunnelServer_UploadSequenceIsIdempotent(t *testing.T) {
 
 	if err := srv.writeSessionUpload("session", sess, 3, []byte("gap")); !errors.Is(err, errUploadSequenceGap) {
 		t.Fatalf("sequence gap error = %v, want %v", err, errUploadSequenceGap)
+	}
+}
+
+func TestTunnelServer_PullLeaseHandoffIsExclusive(t *testing.T) {
+	srv := NewTunnelServer(TunnelServerOptions{Mode: "stream"})
+	peer, sessionConn := newHalfPipe()
+	t.Cleanup(func() {
+		_ = peer.Close()
+		_ = sessionConn.Close()
+	})
+
+	const token = "session"
+	sess := newTunnelSession(sessionConn)
+	srv.sessions[token] = sess
+
+	var holders, maxHolders atomic.Int32
+	var wg sync.WaitGroup
+	pull := func(holdUntilCancel bool) *sessionPullLease {
+		lease, ok := srv.beginSessionPull(token, sess, nil)
+		if !ok {
+			t.Error("beginSessionPull refused a live session")
+			return nil
+		}
+		n := holders.Add(1)
+		for m := maxHolders.Load(); n > m && !maxHolders.CompareAndSwap(m, n); m = maxHolders.Load() {
+		}
+		if holdUntilCancel {
+			select {
+			case <-lease.cancel:
+			case <-time.After(time.Second):
+				t.Error("pull was never taken over")
+			}
+			holders.Add(-1)
+			srv.endSessionPull(token, sess, lease)
+		}
+		return lease
+	}
+
+	first := pull(false)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pull(true)
+		}()
+	}
+	// Both newcomers are now parked waiting for the first pull to finish.
+	time.Sleep(50 * time.Millisecond)
+	holders.Add(-1)
+	srv.endSessionPull(token, sess, first)
+
+	time.Sleep(50 * time.Millisecond)
+	sess.pullMu.Lock()
+	last := sess.pull
+	sess.pullMu.Unlock()
+	last.stop()
+	wg.Wait()
+	if got := maxHolders.Load(); got != 1 {
+		t.Fatalf("%d pulls held the session at once, want 1", got)
 	}
 }
 

@@ -91,8 +91,7 @@ type tunnelSession struct {
 	nextUploadSeq   uint64
 	pullMu          sync.Mutex
 	pull            *sessionPullLease
-	downlinkMu      sync.Mutex
-	pendingDownlink []byte
+	pendingDownlink []byte // owned by the current pull lease holder
 }
 
 func newTunnelSession(conn net.Conn) *tunnelSession {
@@ -1093,36 +1092,28 @@ func (s *TunnelServer) pollPull(rawConn net.Conn, token string) (HandleResult, n
 }
 
 func (s *TunnelServer) beginSessionPull(token string, sess *tunnelSession, rawConn net.Conn) (*sessionPullLease, bool) {
-	if !s.sessionTouch(token, sess) {
-		return nil, false
-	}
-
-	sess.pullMu.Lock()
-	previous := sess.pull
-	if previous != nil {
+	for {
+		sess.pullMu.Lock()
+		if !s.sessionTouch(token, sess) {
+			sess.pullMu.Unlock()
+			return nil, false
+		}
+		previous := sess.pull
+		if previous == nil {
+			lease := newSessionPullLease(rawConn)
+			sess.pull = lease
+			sess.pullMu.Unlock()
+			return lease, true
+		}
 		previous.stop()
-	}
-	sess.pullMu.Unlock()
+		sess.pullMu.Unlock()
 
-	if previous != nil {
 		// Only one goroutine may read a session pipe. A new pull takes over a
-		// stale CDN response by waking its pending read before it starts.
+		// stale CDN response by waking its pending read before it starts, and
+		// re-checks because a concurrent newcomer may win the freed slot first.
 		_ = sess.conn.SetReadDeadline(time.Now())
 		<-previous.done
 	}
-
-	if !s.sessionTouch(token, sess) {
-		return nil, false
-	}
-
-	sess.pullMu.Lock()
-	defer sess.pullMu.Unlock()
-	if !s.sessionTouch(token, sess) {
-		return nil, false
-	}
-	lease := newSessionPullLease(rawConn)
-	sess.pull = lease
-	return lease, true
 }
 
 func (s *TunnelServer) endSessionPull(token string, sess *tunnelSession, lease *sessionPullLease) {
@@ -1135,35 +1126,6 @@ func (s *TunnelServer) endSessionPull(token string, sess *tunnelSession, lease *
 	}
 	sess.pullMu.Unlock()
 	close(lease.done)
-}
-
-func (s *TunnelServer) pendingDownlink(sess *tunnelSession) []byte {
-	sess.downlinkMu.Lock()
-	pending := sess.pendingDownlink
-	sess.downlinkMu.Unlock()
-	return pending
-}
-
-func (s *TunnelServer) storeDownlink(sess *tunnelSession, payload []byte) {
-	sess.downlinkMu.Lock()
-	if len(sess.pendingDownlink) == 0 {
-		sess.pendingDownlink = append(sess.pendingDownlink[:0], payload...)
-	}
-	sess.downlinkMu.Unlock()
-}
-
-func (s *TunnelServer) acknowledgeDownlink(sess *tunnelSession, n int) {
-	if n <= 0 {
-		return
-	}
-	sess.downlinkMu.Lock()
-	if n >= len(sess.pendingDownlink) {
-		sess.pendingDownlink = nil
-	} else {
-		copy(sess.pendingDownlink, sess.pendingDownlink[n:])
-		sess.pendingDownlink = sess.pendingDownlink[:len(sess.pendingDownlink)-n]
-	}
-	sess.downlinkMu.Unlock()
 }
 
 func (s *TunnelServer) sessionPull(rawConn net.Conn, token string, keepalive bool, writePayload func(io.Writer, []byte) error) (HandleResult, net.Conn, error) {
@@ -1208,15 +1170,15 @@ func (s *TunnelServer) sessionPull(rawConn net.Conn, token string, keepalive boo
 		default:
 		}
 
-		payload := s.pendingDownlink(sess)
+		payload := sess.pendingDownlink
 		var n int
 		var err error
 		if len(payload) == 0 {
 			_ = sess.conn.SetReadDeadline(time.Now().Add(s.pullReadTimeout))
 			n, err = sess.conn.Read(buf)
 			if n > 0 {
-				s.storeDownlink(sess, buf[:n])
-				payload = s.pendingDownlink(sess)
+				sess.pendingDownlink = append(sess.pendingDownlink[:0], buf[:n]...)
+				payload = sess.pendingDownlink
 			}
 		}
 		if len(payload) > 0 {
@@ -1235,7 +1197,7 @@ func (s *TunnelServer) sessionPull(rawConn net.Conn, token string, keepalive boo
 				return HandleDone, nil, nil
 			}
 			_ = rawConn.SetWriteDeadline(time.Time{})
-			s.acknowledgeDownlink(sess, len(payload))
+			sess.pendingDownlink = nil
 		}
 		if err == nil {
 			continue
