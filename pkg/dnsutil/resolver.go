@@ -150,7 +150,7 @@ func (r *Resolver) Resolve(ctx context.Context, addr string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid address %q: %w", addr, err)
 	}
-	if _, ok := parseIPLiteral(host); ok {
+	if _, ok := ParseIPLiteral(host); ok {
 		return addr, nil
 	}
 	ip, err := r.lookupHost(ctx, host)
@@ -167,7 +167,7 @@ func (r *Resolver) lookupHost(ctx context.Context, host string) (string, error) 
 	if key == "" {
 		return "", errEmptyHost
 	}
-	if literal, ok := parseIPLiteral(key); ok {
+	if literal, ok := ParseIPLiteral(key); ok {
 		return literal.Unmap().String(), nil
 	}
 

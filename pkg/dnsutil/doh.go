@@ -67,7 +67,7 @@ func newHTTPSNameServer(srv ServerOptions, timeout time.Duration) (*httpsNameSer
 		if addr == "" {
 			continue
 		}
-		if _, ok := parseIPLiteral(addr); !ok {
+		if _, ok := ParseIPLiteral(addr); !ok {
 			return nil, fmt.Errorf("invalid bootstrap ip %q", addr)
 		}
 		ns.bootstrap = append(ns.bootstrap, net.JoinHostPort(addr, dohPort))

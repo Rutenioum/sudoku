@@ -29,9 +29,9 @@ func normalizeHost(host string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 }
 
-// parseIPLiteral parses s as an IP address without a zone. Names are rejected
+// ParseIPLiteral parses s as an IP address without a zone. Names are rejected
 // before netip.ParseAddr so the common hostname path allocates nothing.
-func parseIPLiteral(s string) (netip.Addr, bool) {
+func ParseIPLiteral(s string) (netip.Addr, bool) {
 	if !mayBeIPLiteral(s) {
 		return netip.Addr{}, false
 	}

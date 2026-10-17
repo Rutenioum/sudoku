@@ -20,9 +20,13 @@ with this application without prior consent.
 package geodata
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
+
+	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
 )
 
 type Match struct {
@@ -47,15 +51,16 @@ func (m *Manager) MatchRule(host string, ip net.IP) (bool, Match) {
 
 func (m *Manager) match(host string, ip net.IP, includeLocal bool) (bool, Match) {
 	rules := m.snapshot()
+	addr, hasIP := netip.AddrFromSlice(ip)
+	addr = addr.Unmap()
 
-	if includeLocal && isLocalNetwork(ip) {
+	if includeLocal && hasIP && isLocalAddr(addr) {
 		return true, Match{Kind: "LOCAL"}
 	}
 
-	host = normalizeLookupHost(host)
-	hostIP := net.ParseIP(host)
-	if host != "" && (hostIP == nil || ip == nil || !hostIP.Equal(ip)) {
-		domain := host
+	domain := normalizeLookupHost(host)
+	hostAddr, hostIsIP := dnsutil.ParseIPLiteral(domain)
+	if domain != "" && !(hostIsIP && hasIP && hostAddr.Unmap() == addr) {
 		if _, ok := rules.exact[domain]; ok {
 			return true, Match{Kind: "DOMAIN", Value: domain}
 		}
@@ -64,28 +69,29 @@ func (m *Manager) match(host string, ip net.IP, includeLocal bool) (bool, Match)
 				return true, Match{Kind: "DOMAIN-KEYWORD", Value: keyword}
 			}
 		}
-
-		parts := strings.Split(domain, ".")
-		for i := 0; i < len(parts); i++ {
-			suffix := strings.Join(parts[i:], ".")
+		for suffix := domain; ; {
 			if _, ok := rules.suffix[suffix]; ok {
 				return true, Match{Kind: "DOMAIN-SUFFIX", Value: suffix}
 			}
-		}
-	}
-
-	if ip != nil {
-		if ip.To4() != nil {
-			if matchIPv4Range(rules.ipv4, ip) {
-				return true, Match{Kind: "IP", Value: ip.String()}
+			var found bool
+			if _, suffix, found = strings.Cut(suffix, "."); !found {
+				break
 			}
-			return false, Match{}
-		}
-		if matchIPv6Range(rules.ipv6, ip) {
-			return true, Match{Kind: "IP", Value: ip.String()}
 		}
 	}
 
+	if !hasIP {
+		return false, Match{}
+	}
+	if addr.Is4() {
+		if v4 := addr.As4(); containsIPv4(rules.ipv4, binary.BigEndian.Uint32(v4[:])) {
+			return true, Match{Kind: "IP", Value: addr.String()}
+		}
+		return false, Match{}
+	}
+	if containsIPv6(rules.ipv6, addr.As16()) {
+		return true, Match{Kind: "IP", Value: addr.String()}
+	}
 	return false, Match{}
 }
 
@@ -94,8 +100,11 @@ func normalizeLookupHost(host string) string {
 	if host == "" {
 		return ""
 	}
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
+	// SplitHostPort allocates an error for every host without a port.
+	if strings.IndexByte(host, ':') >= 0 {
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
 	}
 	host = strings.TrimPrefix(host, "[")
 	host = strings.TrimSuffix(host, "]")
@@ -103,16 +112,13 @@ func normalizeLookupHost(host string) string {
 	return strings.ToLower(host)
 }
 
-// isLocalNetwork reports loopback, RFC 1918 and (for IPv6) link-local addresses.
-func isLocalNetwork(ip net.IP) bool {
-	if ip == nil {
-		return false
+// isLocalAddr reports loopback, RFC 1918 and (for IPv6) link-local addresses.
+func isLocalAddr(addr netip.Addr) bool {
+	if !addr.Is4() {
+		return addr.IsLoopback() || addr.IsLinkLocalUnicast()
 	}
-	ip4 := ip.To4()
-	if ip4 == nil {
-		return ip.IsLoopback() || ip.IsLinkLocalUnicast()
-	}
-	return ip4[0] == 10 || ip4[0] == 127 ||
-		(ip4[0] == 172 && ip4[1]&0xf0 == 16) ||
-		(ip4[0] == 192 && ip4[1] == 168)
+	v4 := addr.As4()
+	return v4[0] == 10 || v4[0] == 127 ||
+		(v4[0] == 172 && v4[1]&0xf0 == 16) ||
+		(v4[0] == 192 && v4[1] == 168)
 }

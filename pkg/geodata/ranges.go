@@ -44,23 +44,12 @@ func ipToUint32(ip net.IP) uint32 {
 	return binary.BigEndian.Uint32(ip)
 }
 
-func matchIPv4Range(ranges []IPRange, ip net.IP) bool {
-	ip4 := ip.To4()
-	if ip4 == nil {
-		return false
-	}
-	val := ipToUint32(ip4)
+func containsIPv4(ranges []IPRange, val uint32) bool {
 	idx := sort.Search(len(ranges), func(i int) bool { return ranges[i].End >= val })
 	return idx < len(ranges) && ranges[idx].Start <= val
 }
 
-func matchIPv6Range(ranges []IPv6Range, ip net.IP) bool {
-	ip16 := ip.To16()
-	if ip16 == nil {
-		return false
-	}
-	var key [16]byte
-	copy(key[:], ip16)
+func containsIPv6(ranges []IPv6Range, key [16]byte) bool {
 	idx := sort.Search(len(ranges), func(i int) bool { return compareIPv6(ranges[i].End, key) >= 0 })
 	return idx < len(ranges) && compareIPv6(ranges[idx].Start, key) <= 0
 }

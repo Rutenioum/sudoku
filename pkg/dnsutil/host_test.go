@@ -42,14 +42,14 @@ func TestParseIPLiteral(t *testing.T) {
 		{"[::1]", false},
 	}
 	for _, tc := range tests {
-		if _, ok := parseIPLiteral(tc.in); ok != tc.want {
-			t.Errorf("parseIPLiteral(%q) = %v, want %v", tc.in, ok, tc.want)
+		if _, ok := ParseIPLiteral(tc.in); ok != tc.want {
+			t.Errorf("ParseIPLiteral(%q) = %v, want %v", tc.in, ok, tc.want)
 		}
 	}
 }
 
 func TestParseIPLiteralDoesNotAllocateForHostnames(t *testing.T) {
-	if n := testing.AllocsPerRun(100, func() { parseIPLiteral("www.example.com") }); n != 0 {
+	if n := testing.AllocsPerRun(100, func() { ParseIPLiteral("www.example.com") }); n != 0 {
 		t.Fatalf("hostname path allocated %v times per call", n)
 	}
 }
