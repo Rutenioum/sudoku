@@ -300,6 +300,20 @@ func TestDownloadAndParse_RejectsInvalidCache(t *testing.T) {
 	}
 }
 
+func TestDownloadRuleSource_RejectsOversizedResponse(t *testing.T) {
+	line := []byte("DOMAIN,a.example\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for written := 0; written <= maxRuleSourceBytes; written += len(line) {
+			_, _ = w.Write(line)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	if body, err := downloadRuleSource(srv.URL); err == nil {
+		t.Fatalf("oversized response accepted (%d bytes)", len(body))
+	}
+}
+
 func TestMatchCN_DomainKeywordRuleMatch(t *testing.T) {
 	m := managerWithRules("DOMAIN-KEYWORD,bilibili")
 

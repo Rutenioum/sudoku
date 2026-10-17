@@ -21,6 +21,7 @@ package geodata
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,8 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/logx"
 )
+
+const maxRuleSourceBytes = 32 << 20
 
 var newRuleDownloadClient = func() *http.Client {
 	return dnsutil.NewOutboundHTTPClient(30*time.Second, dnsutil.ClientResolver())
@@ -45,7 +48,7 @@ func (m *Manager) downloadAndParse(url string, state *ruleBuildState) bool {
 			}
 			return true
 		}
-		refreshErr = fmt.Errorf("response contains no supported rules")
+		refreshErr = errors.New("response contains no supported rules")
 	}
 
 	body, cacheErr := m.readRuleCache(url)
@@ -63,9 +66,8 @@ func (m *Manager) downloadAndParse(url string, state *ruleBuildState) bool {
 
 func downloadRuleSource(url string) ([]byte, error) {
 	client := newRuleDownloadClient()
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
+	// Each download builds its own transport; do not leave its connections idling.
+	defer client.CloseIdleConnections()
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, err
@@ -76,12 +78,15 @@ func downloadRuleSource(url string) ([]byte, error) {
 		return nil, fmt.Errorf("unexpected HTTP status %s", resp.Status)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRuleSourceBytes+1))
 	if err != nil {
 		return nil, err
 	}
+	if len(body) > maxRuleSourceBytes {
+		return nil, fmt.Errorf("response larger than %d bytes", maxRuleSourceBytes)
+	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, fmt.Errorf("empty response")
+		return nil, errors.New("empty response")
 	}
 	return body, nil
 }
