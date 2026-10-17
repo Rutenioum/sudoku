@@ -144,7 +144,7 @@ func TestLookupIPs_IPv4Only(t *testing.T) {
 	}
 
 	r := newResolver(1*time.Minute, lookup)
-	ips, err := r.LookupIPs(context.Background(), "example.com")
+	ips, err := r.lookupIPs(context.Background(), "example.com")
 	if err != nil {
 		t.Fatalf("lookup failed: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestResolver_FiltersBogusBenchIPs(t *testing.T) {
 	}
 	r.bogusNets = []*net.IPNet{benchNet}
 
-	ips, err := r.LookupIPs(context.Background(), "example.com")
+	ips, err := r.lookupIPs(context.Background(), "example.com")
 	if err != nil {
 		t.Fatalf("lookup failed: %v", err)
 	}

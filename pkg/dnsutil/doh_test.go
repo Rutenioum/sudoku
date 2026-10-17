@@ -110,7 +110,7 @@ func newTestDoHServer(t *testing.T, handle func(t *testing.T, query []byte) (sta
 	}))
 	t.Cleanup(srv.Close)
 
-	ns, err := newHTTPSNameServer(ServerOptions{Type: "https", Address: "example.com", Path: "/dns-query", Bootstrap: []string{"127.0.0.1"}}, 2*time.Second)
+	ns, err := newHTTPSNameServer(ServerOptions{Type: serverTypeDoH, Address: "example.com", Bootstrap: []string{"127.0.0.1"}}, 2*time.Second)
 	if err != nil {
 		t.Fatalf("newHTTPSNameServer: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestHTTPSNameServerLookupIP(t *testing.T) {
 				}
 				return tc.status, dohTestAnswers(t, query, tc.rcode, tc.records...)
 			})
-			ips, err := ns.LookupIP(context.Background(), "ip4", "Lookup.Test")
+			ips, err := ns.LookupIPv4(context.Background(), "Lookup.Test")
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
@@ -185,7 +185,7 @@ func TestHTTPSNameServerQueryShape(t *testing.T) {
 		gotName.Store(q.Name.String())
 		return 200, dohTestAnswers(t, query, dnsmessage.RCodeSuccess, aRecord(9, 9, 9, 9))
 	})
-	if _, err := ns.LookupIP(context.Background(), "ip4", "www.Example.org."); err != nil {
+	if _, err := ns.LookupIPv4(context.Background(), "www.Example.org."); err != nil {
 		t.Fatal(err)
 	}
 	if requests.Load() != 1 || gotName.Load() != "www.Example.org." {
@@ -197,11 +197,11 @@ func TestHTTPSNameServerLocalNamesBypassDoH(t *testing.T) {
 	ns, requests := newTestDoHServer(t, func(t *testing.T, query []byte) (int, []byte) {
 		return 200, dohTestAnswers(t, query, dnsmessage.RCodeSuccess)
 	})
-	ns.fallback = func(ctx context.Context, network, host string) ([]net.IP, error) {
+	ns.local = localNameServer{lookup: func(context.Context, string, string) ([]net.IP, error) {
 		return []net.IP{net.ParseIP("10.9.8.7")}, nil
-	}
+	}}
 	for _, host := range []string{"printer", "nas.local", "router.lan"} {
-		ips, err := ns.LookupIP(context.Background(), "ip4", host)
+		ips, err := ns.LookupIPv4(context.Background(), host)
 		if err != nil || len(ips) != 1 || ips[0].String() != "10.9.8.7" {
 			t.Fatalf("%s: ips=%v err=%v, want the local fallback", host, ips, err)
 		}

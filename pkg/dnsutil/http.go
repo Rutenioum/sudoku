@@ -38,45 +38,23 @@ func RecommendedClientResolver() *Resolver {
 	recommendedClientResolverOnce.Do(func() {
 		r, err := NewResolver(RecommendedClientOptions())
 		if err != nil {
-			recommendedClientResolver = newResolver(defaultCacheTTL, nil)
-			return
+			r = newResolver(defaultCacheTTL, nil)
 		}
 		recommendedClientResolver = r
 	})
-	if recommendedClientResolver == nil {
-		return newResolver(defaultCacheTTL, nil)
-	}
 	return recommendedClientResolver
 }
 
+// NewOutboundHTTPClient returns a client that dials through OutboundDialer and
+// resolves destinations with resolver, falling back to the dialer's own lookup.
 func NewOutboundHTTPClient(timeout time.Duration, resolver *Resolver) *http.Client {
-	return &http.Client{
-		Timeout:   timeout,
-		Transport: NewOutboundHTTPTransport(timeout, resolver),
-	}
-}
-
-func NewOutboundHTTPTransport(timeout time.Duration, resolver *Resolver) *http.Transport {
-	tr := cloneDefaultHTTPTransport()
+	tr := http.DefaultTransport.(*http.Transport).Clone()
 	dialer := OutboundDialer(timeout)
 	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		target := addr
-		if resolver != nil {
-			if resolved, err := resolver.Resolve(ctx, addr); err == nil && resolved != "" {
-				target = resolved
-			}
+		if resolved, err := resolver.Resolve(ctx, addr); err == nil {
+			addr = resolved
 		}
-		return dialer.DialContext(ctx, network, target)
+		return dialer.DialContext(ctx, network, addr)
 	}
-	return tr
-}
-
-func cloneDefaultHTTPTransport() *http.Transport {
-	if base, ok := http.DefaultTransport.(*http.Transport); ok && base != nil {
-		return base.Clone()
-	}
-	return &http.Transport{
-		Proxy:             http.ProxyFromEnvironment,
-		ForceAttemptHTTP2: true,
-	}
+	return &http.Client{Timeout: timeout, Transport: tr}
 }
