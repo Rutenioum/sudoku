@@ -18,16 +18,14 @@ func writeSudokuPayload(w io.Writer, buf []byte, table *Table, rng *sudokuRand, 
 		maxExpansion = 4
 	}
 	needed := min(min(len(p), maxEncodedWriteSize)*maxExpansion+encodeSlack, maxEncodedWriteSize)
-	if cap(buf) < needed {
-		buf = make([]byte, 0, needed)
-	}
+	buf = growWriteBuf(buf, needed)
 	out := buf[:0]
 	total, buffered := 0, 0
 	for len(p) > 0 {
 		n := min(len(p), (cap(out)-len(out)-encodeSlack)/maxExpansion)
 		if n == 0 {
 			if err := writeEncoded(w, out); err != nil {
-				return out[:0], total, err
+				return releaseWriteBuf(out), total, err
 			}
 			total += buffered
 			buffered = 0
@@ -46,9 +44,35 @@ func writeSudokuPayload(w io.Writer, buf []byte, table *Table, rng *sudokuRand, 
 		}
 	}
 	if err := writeEncoded(w, out); err != nil {
-		return out[:0], total, err
+		return releaseWriteBuf(out), total, err
 	}
-	return out[:0], total + buffered, nil
+	return releaseWriteBuf(out), total + buffered, nil
+}
+
+// retainedWriteBytes is the encode buffer a connection keeps between writes.
+// Larger encodes borrow a pooled buffer for the duration of one Write.
+const retainedWriteBytes = 2048
+
+// growWriteBuf returns an empty buffer with room for need bytes, borrowed from
+// bufferPool when need exceeds what a connection may retain.
+func growWriteBuf(buf []byte, need int) []byte {
+	if cap(buf) >= need {
+		return buf[:0]
+	}
+	if need <= retainedWriteBytes {
+		return make([]byte, 0, need)
+	}
+	return getBuffer()[:0]
+}
+
+// releaseWriteBuf keeps a small buffer for the next Write and returns a pooled
+// one.
+func releaseWriteBuf(buf []byte) []byte {
+	if cap(buf) <= retainedWriteBytes {
+		return buf[:0]
+	}
+	putBuffer(buf)
+	return nil
 }
 
 // Keep transport writes near the decoder's read-buffer size. Larger writes can

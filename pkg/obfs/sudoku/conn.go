@@ -20,7 +20,6 @@ with this application without prior consent.
 package sudoku
 
 import (
-	"bufio"
 	"io"
 	"net"
 	"sync"
@@ -28,13 +27,10 @@ import (
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 )
 
-// readBufferSize is the bufio size both codecs read the wire through.
-const readBufferSize = 32 * 1024
-
 type Conn struct {
 	net.Conn
 	table  *Table
-	reader *bufio.Reader
+	reader *wireReader
 	rec    handshakeRecorder
 
 	hintBuf   [3]uint8 // hint indexes of a group still being read
@@ -88,7 +84,7 @@ func (sc *Conn) GetBufferedAndRecorded() []byte {
 	if sc == nil {
 		return nil
 	}
-	return sc.rec.recordedWithBuffered(sc.reader)
+	return sc.rec.recordedWithBuffered(sc.reader.pending())
 }
 
 func (sc *Conn) Write(p []byte) (n int, err error) {
@@ -115,17 +111,17 @@ func (sc *Conn) Read(p []byte) (n int, err error) {
 	}
 	if sc.reader == nil {
 		// Directional connections also construct write-only codecs.
-		sc.reader = bufio.NewReaderSize(sc.Conn, readBufferSize)
+		sc.reader = &wireReader{src: sc.Conn}
 	}
 
 	outN := 0
 	for {
-		chunk, rErr := peekBufferedChunk(sc.reader)
+		chunk, rErr := sc.reader.peek()
 		if len(chunk) > 0 {
 			var consumed int
 			outN, consumed, rErr = sc.decode(p, chunk)
 			sc.rec.add(chunk[:consumed])
-			_, _ = sc.reader.Discard(consumed)
+			sc.reader.discard(consumed)
 		}
 
 		if rErr != nil {

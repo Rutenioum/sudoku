@@ -20,7 +20,6 @@ with this application without prior consent.
 package sudoku
 
 import (
-	"bufio"
 	"io"
 	"net"
 	"sync"
@@ -41,7 +40,7 @@ const (
 type PackedConn struct {
 	net.Conn
 	table  *Table
-	reader *bufio.Reader
+	reader *wireReader
 	rec    handshakeRecorder
 
 	// Write buffer and state
@@ -120,7 +119,7 @@ func (pc *PackedConn) GetBufferedAndRecorded() []byte {
 	if pc == nil {
 		return nil
 	}
-	return pc.rec.recordedWithBuffered(pc.reader)
+	return pc.rec.recordedWithBuffered(pc.reader.pending())
 }
 
 // appendByte feeds one plaintext byte into the 6-bit accumulator and emits every
@@ -203,11 +202,8 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 
 	// Bound storage independently of the caller's Write size, including padding.
 	needed := min(min(len(p), maxEncodedWriteSize)*3+64, maxEncodedWriteSize)
-	if cap(pc.writeBuf) < needed {
-		pc.writeBuf = make([]byte, 0, needed)
-	}
-	out := pc.writeBuf[:0]
-	defer func() { pc.writeBuf = out[:0] }()
+	out := growWriteBuf(pc.writeBuf, needed)
+	defer func() { pc.writeBuf = releaseWriteBuf(out) }()
 	layout := pc.table.layout
 	rng := pc.rng
 	paddingThreshold := pc.paddingThreshold
@@ -308,17 +304,17 @@ func (pc *PackedConn) Read(p []byte) (int, error) {
 	}
 
 	if pc.reader == nil {
-		pc.reader = bufio.NewReaderSize(pc.Conn, readBufferSize)
+		pc.reader = &wireReader{src: pc.Conn}
 	}
 
 	outN := 0
 	for {
-		chunk, rErr := peekBufferedChunk(pc.reader)
+		chunk, rErr := pc.reader.peek()
 		if len(chunk) > 0 {
 			var consumed int
 			outN, consumed, rErr = pc.decode(p, chunk)
 			pc.rec.add(chunk[:consumed])
-			_, _ = pc.reader.Discard(consumed)
+			pc.reader.discard(consumed)
 		}
 
 		if rErr != nil {

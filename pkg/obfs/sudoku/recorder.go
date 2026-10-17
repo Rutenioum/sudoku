@@ -1,7 +1,6 @@
 package sudoku
 
 import (
-	"bufio"
 	"bytes"
 	"sync"
 	"sync/atomic"
@@ -41,8 +40,8 @@ func (r *handshakeRecorder) add(wire []byte) {
 }
 
 // recordedWithBuffered returns everything recorded so far followed by the wire
-// bytes reader has buffered but not yet handed to the decoder.
-func (r *handshakeRecorder) recordedWithBuffered(reader *bufio.Reader) []byte {
+// bytes received but not yet handed to the decoder.
+func (r *handshakeRecorder) recordedWithBuffered(pending []byte) []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -50,12 +49,11 @@ func (r *handshakeRecorder) recordedWithBuffered(reader *bufio.Reader) []byte {
 	if r.buf != nil {
 		recorded = r.buf.Bytes()
 	}
-	if reader == nil || reader.Buffered() == 0 {
+	if len(pending) == 0 {
 		return recorded
 	}
-	peeked, _ := reader.Peek(reader.Buffered())
-	full := make([]byte, len(recorded)+len(peeked))
+	full := make([]byte, len(recorded)+len(pending))
 	copy(full, recorded)
-	copy(full[len(recorded):], peeked)
+	copy(full[len(recorded):], pending)
 	return full
 }

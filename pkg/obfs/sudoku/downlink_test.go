@@ -110,7 +110,7 @@ func TestPackedConn_SmallReadDoesNotOverDecode(t *testing.T) {
 		t.Fatalf("small read: %v", err)
 	}
 
-	if reader.reader.Buffered() == 0 {
+	if len(reader.reader.pending()) == 0 {
 		t.Fatal("small read consumed the entire wire buffer")
 	}
 }
