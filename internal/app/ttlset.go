@@ -20,26 +20,27 @@ with this application without prior consent.
 package app
 
 import (
-	"strings"
 	"sync"
 	"time"
 )
 
-type ttlSet struct {
-	mu         sync.Mutex
-	m          map[string]time.Time
-	maxEntries int
+// ttlSet is a concurrent set whose members expire a fixed time after insertion.
+type ttlSet[K comparable] struct {
+	mu       sync.Mutex
+	m        map[K]time.Time
+	now      func() time.Time
+	sweepMin int
+	sweepAt  int
 }
 
-func newTTLSet(maxEntries int) ttlSet {
-	if maxEntries <= 0 {
-		maxEntries = 1024
-	}
-	return ttlSet{m: make(map[string]time.Time), maxEntries: maxEntries}
+// newTTLSet sweeps expired members once the set holds sweepMin of them. Live members are never evicted,
+// so the sweep threshold doubles with them to keep sweeping amortized O(1) per insert.
+func newTTLSet[K comparable](sweepMin int) ttlSet[K] {
+	return ttlSet[K]{m: make(map[K]time.Time), now: time.Now, sweepMin: sweepMin, sweepAt: sweepMin}
 }
 
-func (s *ttlSet) pruneLocked(now time.Time) {
-	if len(s.m) < s.maxEntries {
+func (s *ttlSet[K]) sweepLocked(now time.Time) {
+	if len(s.m) < s.sweepAt {
 		return
 	}
 	for k, exp := range s.m {
@@ -47,45 +48,37 @@ func (s *ttlSet) pruneLocked(now time.Time) {
 			delete(s.m, k)
 		}
 	}
+	s.sweepAt = max(s.sweepMin, 2*len(s.m))
 }
 
-func (s *ttlSet) Add(key string, ttl time.Duration) {
-	key = strings.TrimSpace(key)
-	if key == "" || ttl <= 0 {
-		return
-	}
-	now := time.Now()
+func (s *ttlSet[K]) Add(key K, ttl time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pruneLocked(now)
+	now := s.now()
+	s.sweepLocked(now)
 	s.m[key] = now.Add(ttl)
 }
 
-func (s *ttlSet) Has(key string) bool {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return false
-	}
-	now := time.Now()
+func (s *ttlSet[K]) Has(key K) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	exp, ok := s.m[key]
-	if !ok || now.After(exp) {
+	if !ok {
+		return false
+	}
+	if s.now().After(exp) {
 		delete(s.m, key)
 		return false
 	}
 	return true
 }
 
-func (s *ttlSet) Allow(key string, ttl time.Duration) bool {
-	key = strings.TrimSpace(key)
-	if key == "" || ttl <= 0 {
-		return false
-	}
-	now := time.Now()
+// Allow reports whether key was absent or expired, and if so starts a new TTL for it.
+func (s *ttlSet[K]) Allow(key K, ttl time.Duration) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pruneLocked(now)
+	now := s.now()
+	s.sweepLocked(now)
 	if exp, ok := s.m[key]; ok && now.Before(exp) {
 		return false
 	}

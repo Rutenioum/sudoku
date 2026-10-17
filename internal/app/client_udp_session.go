@@ -49,9 +49,9 @@ type uotClientSession struct {
 
 	allowedClientIP net.IP
 	peerTTL         time.Duration
-	peers           ttlSet
+	peers           ttlSet[string]
 	logTTL          time.Duration
-	logOnce         ttlSet
+	logOnce         ttlSet[string]
 }
 
 func newUoTClientSession(ctrl net.Conn, udpConn *net.UDPConn, uotConn net.Conn, udpNet string, cfg *config.Config, routeMgrs *routeManagers, resolver *dnsutil.Resolver) *uotClientSession {
@@ -66,9 +66,9 @@ func newUoTClientSession(ctrl net.Conn, udpConn *net.UDPConn, uotConn net.Conn, 
 		closed:          make(chan struct{}),
 		allowedClientIP: initialUDPAssociateClientIP(ipFromNetAddr(ctrl.RemoteAddr())),
 		peerTTL:         2 * time.Minute,
-		peers:           newTTLSet(256),
+		peers:           newTTLSet[string](256),
 		logTTL:          30 * time.Second,
-		logOnce:         newTTLSet(1024),
+		logOnce:         newTTLSet[string](1024),
 	}
 	sess.uotWriter = tunnel.NewUoTWriter(uotConn, func(error) { sess.close() })
 	return sess
