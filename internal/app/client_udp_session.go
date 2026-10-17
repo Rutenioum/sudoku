@@ -102,84 +102,94 @@ func (s *uotClientSession) consumeControl() {
 func (s *uotClientSession) pipeClientToServer() {
 	buf := make([]byte, 65535)
 	for {
-		n, addr, err := s.udpConn.ReadFromUDP(buf)
+		n, from, err := s.udpConn.ReadFromUDP(buf)
 		if err != nil {
 			s.close()
 			return
 		}
-		srcIP := normalizeIP(addr.IP)
-
-		if addr != nil && s.allowedClientIP != nil && !s.allowedClientIP.Equal(srcIP) {
-			if !s.peers.Has(peerKey(addr)) {
-				continue
-			}
-			clientAddr := s.getClientAddr()
-			if clientAddr == nil {
-				continue
-			}
-			if resp := buildUDPResponsePacket(udpAddrString(addr), buf[:n]); resp != nil {
-				if _, err := s.udpConn.WriteToUDP(resp, clientAddr); err != nil {
-					s.close()
-					return
-				}
-			}
-			continue
+		if err := s.handlePacket(from, buf[:n]); err != nil {
+			s.close()
+			return
 		}
+	}
+}
 
-		destAddr, destIP, payload, err := decodeSocks5UDPRequest(buf[:n])
+// handlePacket dispatches one datagram from the relay socket: either a reply from a direct peer or a
+// SOCKS5 UDP request from the client. A non-nil error means a write failed and the session must end.
+func (s *uotClientSession) handlePacket(from *net.UDPAddr, pkt []byte) error {
+	srcIP := normalizeIP(from.IP)
+	if s.allowedClientIP != nil && !s.allowedClientIP.Equal(srcIP) {
+		return s.relayPeerResponse(from, pkt)
+	}
+	return s.relayClientDatagram(from, srcIP, pkt)
+}
+
+func (s *uotClientSession) relayPeerResponse(from *net.UDPAddr, pkt []byte) error {
+	if !s.peers.Has(peerKey(from)) {
+		return nil
+	}
+	clientAddr := s.getClientAddr()
+	if clientAddr == nil {
+		return nil
+	}
+	if resp := buildUDPResponsePacket(udpAddrString(from), pkt); resp != nil {
+		_, err := s.udpConn.WriteToUDP(resp, clientAddr)
+		return err
+	}
+	return nil
+}
+
+func (s *uotClientSession) relayClientDatagram(from *net.UDPAddr, srcIP net.IP, pkt []byte) error {
+	destAddr, destIP, payload, err := decodeSocks5UDPRequest(pkt)
+	if err != nil {
+		return nil
+	}
+	if s.allowedClientIP == nil && srcIP != nil {
+		s.allowedClientIP = srcIP
+	}
+	s.setClientAddr(from)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	decision := decideRoute(s.cfg, s.routeMgrs, destAddr, destIP)
+
+	if decision.action == routeActionReject {
+		s.logRouteOnce(from, destAddr, decision)
+		return nil
+	}
+
+	shouldProxy := decision.shouldProxy()
+	if !shouldProxy {
+		directAddr, err := resolveUDPAddr(ctx, destAddr, s.resolver)
 		if err != nil {
-			continue
-		}
-		if s.allowedClientIP == nil && srcIP != nil {
-			s.allowedClientIP = srcIP
-		}
-		s.setClientAddr(addr)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		decision := decideRoute(s.cfg, s.routeMgrs, destAddr, destIP)
-		actionKey := decision.action.String()
-
-		if decision.action == routeActionReject {
-			if s.logOnce.Allow(actionKey+"|"+destAddr, s.logTTL) {
-				logRoute("UDP", addr, destAddr, decision)
-			}
-			cancel()
-			continue
-		}
-
-		shouldProxy := decision.shouldProxy()
-		if !shouldProxy {
-			directAddr, err := resolveUDPAddr(ctx, destAddr, s.resolver)
-			if err != nil {
-				decision.action = routeActionProxy
-				decision.match += "/RESOLVE_FAIL"
-				shouldProxy = true
-			} else if directAddr != nil && directAddr.IP != nil && directAddr.IP.To4() == nil && s.udpNet == "udp4" {
-				decision.action = routeActionProxy
-				decision.match += "/IPV6->PROXY"
-				shouldProxy = true
-			} else if directAddr != nil {
-				s.peers.Add(peerKey(directAddr), s.peerTTL)
-				if _, err := s.udpConn.WriteToUDP(payload, directAddr); err != nil {
-					s.close()
-					cancel()
-					return
-				}
+			decision.action = routeActionProxy
+			decision.match += "/RESOLVE_FAIL"
+			shouldProxy = true
+		} else if directAddr != nil && directAddr.IP != nil && directAddr.IP.To4() == nil && s.udpNet == "udp4" {
+			decision.action = routeActionProxy
+			decision.match += "/IPV6->PROXY"
+			shouldProxy = true
+		} else if directAddr != nil {
+			s.peers.Add(peerKey(directAddr), s.peerTTL)
+			if _, err := s.udpConn.WriteToUDP(payload, directAddr); err != nil {
+				return err
 			}
 		}
+	}
 
-		if shouldProxy {
-			if err := s.uotWriter.WriteDatagram(destAddr, payload); err != nil {
-				s.close()
-				cancel()
-				return
-			}
+	if shouldProxy {
+		if err := s.uotWriter.WriteDatagram(destAddr, payload); err != nil {
+			return err
 		}
+	}
 
-		if s.logOnce.Allow(decision.action.String()+"|"+destAddr, s.logTTL) {
-			logRoute("UDP", addr, destAddr, decision)
-		}
-		cancel()
+	s.logRouteOnce(from, destAddr, decision)
+	return nil
+}
+
+func (s *uotClientSession) logRouteOnce(from *net.UDPAddr, destAddr string, decision routeDecision) {
+	if s.logOnce.Allow(decision.action.String()+"|"+destAddr, s.logTTL) {
+		logRoute("UDP", from, destAddr, decision)
 	}
 }
 
