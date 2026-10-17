@@ -21,7 +21,6 @@ package httpmask
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -113,7 +112,7 @@ func (s *TunnelServer) handleUpload(req *tunnelRequest, query url.Values, codec 
 	if s.passThroughOnReject && !s.sessions.has(token) {
 		return reject(http.StatusNotFound, "not found")
 	}
-	body, err := req.body()
+	body, length, err := req.body()
 	if err != nil {
 		if codec.poll {
 			return reject(http.StatusBadRequest, "bad request")
@@ -124,7 +123,7 @@ func (s *TunnelServer) handleUpload(req *tunnelRequest, query url.Values, codec 
 	if err != nil {
 		return reject(http.StatusBadRequest, "bad request")
 	}
-	return s.push(rawConn, token, sequence, body, codec)
+	return s.push(rawConn, token, sequence, body, length, codec)
 }
 
 // startStreamOne turns a tokenless POST into a single full-duplex tunnel.
@@ -134,7 +133,7 @@ func (s *TunnelServer) startStreamOne(req *tunnelRequest) (HandleResult, net.Con
 		_ = rawConn.Close()
 		return HandleDone, nil, err
 	}
-	bodyReader, err := req.body()
+	bodyReader, _, err := req.body()
 	if err != nil {
 		_ = rawConn.Close()
 		return HandleDone, nil, err
@@ -215,10 +214,11 @@ var (
 	pollCodec   = sessionCodec{poll: true}
 )
 
-// readUpload reads one upload body and returns the tunnel bytes it carries.
-func (c sessionCodec) readUpload(body io.Reader) ([]byte, error) {
+// readUpload reads one upload body of the given declared length (-1 when unknown) and returns the tunnel bytes
+// it carries. The result lives in sc and is valid until sc is released.
+func (c sessionCodec) readUpload(sc *uploadScratch, body io.Reader, length int64) ([]byte, error) {
 	if !c.poll {
-		payload, err := io.ReadAll(io.LimitReader(body, maxUploadBytes+1))
+		payload, err := sc.readBody(body, length, maxUploadBytes+1)
 		if err != nil {
 			return nil, err
 		}
@@ -228,24 +228,11 @@ func (c sessionCodec) readUpload(body io.Reader) ([]byte, error) {
 		return payload, nil
 	}
 
-	encoded, err := io.ReadAll(io.LimitReader(body, maxUploadBytes))
+	encoded, err := sc.readBody(body, length, maxUploadBytes)
 	if err != nil {
 		return nil, err
 	}
-	var decoded bytes.Buffer
-	for line := range bytes.SplitSeq(encoded, []byte{'\n'}) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		raw := make([]byte, base64.StdEncoding.DecodedLen(len(line)))
-		n, err := base64.StdEncoding.Decode(raw, line)
-		if err != nil {
-			return nil, err
-		}
-		_, _ = decoded.Write(raw[:n])
-	}
-	return decoded.Bytes(), nil
+	return sc.decodeLines(encoded)
 }
 
 // pullWriter returns the function that frames one downlink payload into w.
@@ -268,13 +255,15 @@ func (c sessionCodec) pullWriter() func(w io.Writer, p []byte) error {
 }
 
 // push applies one upload request to the session and answers it.
-func (s *TunnelServer) push(rawConn net.Conn, token string, sequence uint64, body io.Reader, codec sessionCodec) (HandleResult, net.Conn, error) {
+func (s *TunnelServer) push(rawConn net.Conn, token string, sequence uint64, body io.Reader, length int64, codec sessionCodec) (HandleResult, net.Conn, error) {
 	sess, ok := s.sessions.get(token)
 	if !ok {
 		return replyDone(rawConn, http.StatusForbidden, "forbidden")
 	}
 
-	payload, err := codec.readUpload(body)
+	sc := getUploadScratch()
+	defer putUploadScratch(sc)
+	payload, err := codec.readUpload(sc, body, length)
 	if errors.Is(err, errUploadTooLarge) {
 		return replyDone(rawConn, http.StatusRequestEntityTooLarge, "too large")
 	}

@@ -53,13 +53,13 @@ func TestReadHTTPRequest_Fields(t *testing.T) {
 	if req.tunnel != "poll" || req.contentLength != "5" || req.transferEncoding != "" {
 		t.Fatalf("fields = tunnel %q, content-length %q, transfer-encoding %q", req.tunnel, req.contentLength, req.transferEncoding)
 	}
-	body, err := req.body()
+	body, length, err := req.body()
 	if err != nil {
 		t.Fatalf("body: %v", err)
 	}
 	got, _ := io.ReadAll(body)
-	if string(got) != "hello" {
-		t.Fatalf("body = %q", got)
+	if string(got) != "hello" || length != 5 {
+		t.Fatalf("body = %q (declared %d)", got, length)
 	}
 }
 

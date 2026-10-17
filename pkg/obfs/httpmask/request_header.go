@@ -121,19 +121,20 @@ func (r *tunnelRequest) replayPrefix() []byte {
 	return append(out, buffered...)
 }
 
-// body returns a reader over the request body, which follows the header in br.
-func (r *tunnelRequest) body() (io.Reader, error) {
+// body returns a reader over the request body, which follows the header in br, and its declared length (-1 when
+// unknown).
+func (r *tunnelRequest) body() (io.Reader, int64, error) {
 	if strings.Contains(strings.ToLower(r.transferEncoding), "chunked") {
-		return httputil.NewChunkedReader(r.br), nil
+		return httputil.NewChunkedReader(r.br), -1, nil
 	}
 	if r.contentLength != "" {
 		n, err := strconv.ParseInt(r.contentLength, 10, 64)
 		if err != nil || n < 0 {
-			return nil, fmt.Errorf("invalid content-length")
+			return nil, 0, fmt.Errorf("invalid content-length")
 		}
-		return io.LimitReader(r.br, n), nil
+		return io.LimitReader(r.br, n), n, nil
 	}
-	return r.br, nil
+	return r.br, -1, nil
 }
 
 // readHTTPRequest parses a request header from br (which already holds first, the sniffed leading bytes). On
