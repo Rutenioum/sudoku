@@ -39,9 +39,8 @@ var resolveWithCache = func(ctx context.Context, resolver *dnsutil.Resolver, add
 }
 
 type routeDecision struct {
-	action     string
-	match      string
-	directAddr string
+	action string
+	match  string
 }
 
 const (
@@ -98,45 +97,39 @@ func (m *routeManagers) managerForAction(action string) *geodata.Manager {
 }
 
 func decideRoute(cfg *config.Config, mgrs *routeManagers, destAddr string, destIP net.IP) routeDecision {
-	decision := routeDecision{action: routeActionProxy, match: "MODE(global)", directAddr: destAddr}
 	if cfg == nil {
-		decision.match = "CFG(nil)"
-		return decision
+		return routeDecision{action: routeActionProxy, match: "CFG(nil)"}
 	}
 
-	if matched, match, _ := matchRuleManager(mgrs, routeActionReject, destAddr, destIP); matched {
-		return routeDecision{action: routeActionReject, match: match, directAddr: destAddr}
+	if matched, match := matchRuleManager(mgrs, routeActionReject, destAddr, destIP); matched {
+		return routeDecision{action: routeActionReject, match: match}
 	}
-	if matched, match, _ := matchRuleManager(mgrs, routeActionProxy, destAddr, destIP); matched {
-		return routeDecision{action: routeActionProxy, match: match, directAddr: destAddr}
+	if matched, match := matchRuleManager(mgrs, routeActionProxy, destAddr, destIP); matched {
+		return routeDecision{action: routeActionProxy, match: match}
 	}
 
 	switch cfg.ProxyMode {
 	case "direct":
-		return routeDecision{action: routeActionDirect, match: "MODE(direct)", directAddr: destAddr}
+		return routeDecision{action: routeActionDirect, match: "MODE(direct)"}
 	case "global":
-		return routeDecision{action: routeActionProxy, match: "MODE(global)", directAddr: destAddr}
+		return routeDecision{action: routeActionProxy, match: "MODE(global)"}
 	case "pac":
 		if mgrs == nil || mgrs.direct == nil {
-			decision.match = "PAC(no-rules)"
-			return decision
+			return routeDecision{action: routeActionProxy, match: "PAC(no-rules)"}
 		}
-
-		if matched, match, directAddr := matchRuleManager(mgrs, routeActionDirect, destAddr, destIP); matched {
-			return routeDecision{action: routeActionDirect, match: match, directAddr: directAddr}
+		if matched, match := matchRuleManager(mgrs, routeActionDirect, destAddr, destIP); matched {
+			return routeDecision{action: routeActionDirect, match: match}
 		}
-		decision.match = "PAC/NONE"
-		return decision
+		return routeDecision{action: routeActionProxy, match: "PAC/NONE"}
 	default:
-		decision.match = "MODE(unknown)"
-		return decision
+		return routeDecision{action: routeActionProxy, match: "MODE(unknown)"}
 	}
 }
 
-func matchRuleManager(mgrs *routeManagers, action string, destAddr string, destIP net.IP) (bool, string, string) {
+func matchRuleManager(mgrs *routeManagers, action string, destAddr string, destIP net.IP) (bool, string) {
 	mgr := mgrs.managerForAction(action)
 	if mgr == nil {
-		return false, "", ""
+		return false, ""
 	}
 
 	ok, m := mgr.MatchCN(destAddr, destIP)
@@ -144,9 +137,9 @@ func matchRuleManager(mgrs *routeManagers, action string, destAddr string, destI
 		ok, m = mgr.MatchRule(destAddr, destIP)
 	}
 	if ok {
-		return true, action + "/" + m.String(), destAddr
+		return true, action + "/" + m.String()
 	}
-	return false, "", ""
+	return false, ""
 }
 
 func logRoute(network string, src net.Addr, destAddr string, decision routeDecision) {

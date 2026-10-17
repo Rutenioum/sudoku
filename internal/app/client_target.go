@@ -56,10 +56,7 @@ func dialTarget(network string, src net.Addr, destAddrStr string, destIP net.IP,
 		return conn, decision, true
 	}
 
-	directAddr := strings.TrimSpace(decision.directAddr)
-	if directAddr == "" {
-		directAddr = destAddrStr
-	}
+	directAddr := strings.TrimSpace(destAddrStr)
 	if resolvedAddr, err := resolveDirectAddr(resolver, directAddr); err == nil && strings.TrimSpace(resolvedAddr) != "" {
 		directAddr = resolvedAddr
 	}

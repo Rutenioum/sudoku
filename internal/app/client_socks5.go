@@ -451,7 +451,7 @@ func (s *uotClientSession) pipeClientToServer() {
 
 		shouldProxy := decision.shouldProxy()
 		if !shouldProxy {
-			directAddr, err := resolveUDPAddr(ctx, decision.directAddr, s.resolver)
+			directAddr, err := resolveUDPAddr(ctx, destAddr, s.resolver)
 			if err != nil {
 				decision.action = routeActionProxy
 				decision.match += "/RESOLVE_FAIL"
