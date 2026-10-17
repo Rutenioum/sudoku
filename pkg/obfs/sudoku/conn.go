@@ -21,20 +21,15 @@ package sudoku
 
 import (
 	"bufio"
-	"bytes"
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 )
 
-const (
-	IOBufferSize           = 32 * 1024
-	PackedIOBufferSize     = 32 * 1024
-	PackedDecodeBufferSize = 32 * 1024
-)
+// readBufferSize is the bufio size both codecs read the wire through.
+const readBufferSize = 32 * 1024
 
 var perm4 = [24][4]byte{
 	{0, 1, 2, 3},
@@ -65,11 +60,9 @@ var perm4 = [24][4]byte{
 
 type Conn struct {
 	net.Conn
-	table      *Table
-	reader     *bufio.Reader
-	recorder   *bytes.Buffer
-	recording  atomic.Bool
-	recordLock sync.Mutex
+	table  *Table
+	reader *bufio.Reader
+	rec    handshakeRecorder
 
 	hintBuf   [4]byte
 	hintCount int
@@ -104,47 +97,25 @@ func NewConn(c net.Conn, table *Table, pMin, pMax int, record bool) *Conn {
 		paddingThreshold: pickPaddingThreshold(localRng, pMin, pMax),
 	}
 	if record {
-		sc.recorder = new(bytes.Buffer)
-		sc.recording.Store(true)
+		sc.rec.start()
 	}
 	return sc
 }
 
+// StopRecording ends handshake recording and drops what was recorded.
 func (sc *Conn) StopRecording() {
-	if sc == nil {
-		return
+	if sc != nil {
+		sc.rec.stop()
 	}
-	sc.recordLock.Lock()
-	sc.recording.Store(false)
-	sc.recorder = nil
-	sc.recordLock.Unlock()
 }
 
+// GetBufferedAndRecorded returns every wire byte read so far that has not been
+// stopped from recording, plus bytes buffered but not yet decoded.
 func (sc *Conn) GetBufferedAndRecorded() []byte {
 	if sc == nil {
 		return nil
 	}
-
-	sc.recordLock.Lock()
-	defer sc.recordLock.Unlock()
-
-	var recorded []byte
-	if sc.recorder != nil {
-		recorded = sc.recorder.Bytes()
-	}
-	if sc.reader == nil {
-		return recorded
-	}
-
-	buffered := sc.reader.Buffered()
-	if buffered > 0 {
-		peeked, _ := sc.reader.Peek(buffered)
-		full := make([]byte, len(recorded)+len(peeked))
-		copy(full, recorded)
-		copy(full[len(recorded):], peeked)
-		return full
-	}
-	return recorded
+	return sc.rec.recordedWithBuffered(sc.reader)
 }
 
 func (sc *Conn) Write(p []byte) (n int, err error) {
@@ -171,7 +142,7 @@ func (sc *Conn) Read(p []byte) (n int, err error) {
 	}
 	if sc.reader == nil {
 		// Directional connections also construct write-only codecs.
-		sc.reader = bufio.NewReaderSize(sc.Conn, IOBufferSize)
+		sc.reader = bufio.NewReaderSize(sc.Conn, readBufferSize)
 	}
 
 	outN := 0
@@ -180,13 +151,7 @@ func (sc *Conn) Read(p []byte) (n int, err error) {
 		if len(chunk) > 0 {
 			var consumed int
 			outN, consumed, rErr = sc.decode(p, chunk)
-			if sc.recording.Load() {
-				sc.recordLock.Lock()
-				if sc.recording.Load() && sc.recorder != nil {
-					sc.recorder.Write(chunk[:consumed])
-				}
-				sc.recordLock.Unlock()
-			}
+			sc.rec.add(chunk[:consumed])
 			_, _ = sc.reader.Discard(consumed)
 		}
 

@@ -21,11 +21,9 @@ package sudoku
 
 import (
 	"bufio"
-	"bytes"
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 )
@@ -44,10 +42,7 @@ type PackedConn struct {
 	net.Conn
 	table  *Table
 	reader *bufio.Reader
-
-	recorder   *bytes.Buffer
-	recording  atomic.Bool
-	recordLock sync.Mutex
+	rec    handshakeRecorder
 
 	// Write buffer and state
 	writeMu  sync.Mutex
@@ -107,47 +102,25 @@ func NewPackedConnWithRecord(c net.Conn, table *Table, pMin, pMax int, record bo
 		pc.padPool = append(pc.padPool, pc.padMarker)
 	}
 	if record {
-		pc.recorder = new(bytes.Buffer)
-		pc.recording.Store(true)
+		pc.rec.start()
 	}
 	return pc
 }
 
+// StopRecording ends handshake recording and drops what was recorded.
 func (pc *PackedConn) StopRecording() {
-	if pc == nil {
-		return
+	if pc != nil {
+		pc.rec.stop()
 	}
-	pc.recordLock.Lock()
-	pc.recording.Store(false)
-	pc.recorder = nil
-	pc.recordLock.Unlock()
 }
 
+// GetBufferedAndRecorded returns every wire byte read so far that has not been
+// stopped from recording, plus bytes buffered but not yet decoded.
 func (pc *PackedConn) GetBufferedAndRecorded() []byte {
 	if pc == nil {
 		return nil
 	}
-
-	pc.recordLock.Lock()
-	defer pc.recordLock.Unlock()
-
-	var recorded []byte
-	if pc.recorder != nil {
-		recorded = pc.recorder.Bytes()
-	}
-	if pc.reader == nil {
-		return recorded
-	}
-
-	buffered := pc.reader.Buffered()
-	if buffered > 0 {
-		peeked, _ := pc.reader.Peek(buffered)
-		full := make([]byte, len(recorded)+len(peeked))
-		copy(full, recorded)
-		copy(full[len(recorded):], peeked)
-		return full
-	}
-	return recorded
+	return pc.rec.recordedWithBuffered(pc.reader)
 }
 
 func (pc *PackedConn) appendForcedPadding(out []byte) []byte {
@@ -362,7 +335,7 @@ func (pc *PackedConn) Read(p []byte) (int, error) {
 	}
 
 	if pc.reader == nil {
-		pc.reader = bufio.NewReaderSize(pc.Conn, PackedIOBufferSize)
+		pc.reader = bufio.NewReaderSize(pc.Conn, readBufferSize)
 	}
 
 	outN := 0
@@ -371,13 +344,7 @@ func (pc *PackedConn) Read(p []byte) (int, error) {
 		if len(chunk) > 0 {
 			var consumed int
 			outN, consumed, rErr = pc.decode(p, chunk)
-			if pc.recording.Load() {
-				pc.recordLock.Lock()
-				if pc.recording.Load() && pc.recorder != nil {
-					pc.recorder.Write(chunk[:consumed])
-				}
-				pc.recordLock.Unlock()
-			}
+			pc.rec.add(chunk[:consumed])
 			_, _ = pc.reader.Discard(consumed)
 		}
 

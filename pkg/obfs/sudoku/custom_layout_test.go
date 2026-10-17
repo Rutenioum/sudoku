@@ -40,7 +40,7 @@ func TestCustomLayoutParsingAndPadding(t *testing.T) {
 	}
 
 	for _, b := range table.PaddingPool {
-		if table.layout.isHint(b) {
+		if table.layout.hintTable[b] {
 			t.Fatalf("padding byte incorrectly recognized as hint: %08b", b)
 		}
 		if bits.OnesCount8(b) < 5 {

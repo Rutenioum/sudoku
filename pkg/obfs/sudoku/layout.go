@@ -39,10 +39,6 @@ type byteLayout struct {
 	decodeGroup [256]byte // 0..63 for hints, 0xff for padding/invalid bytes
 }
 
-func (l *byteLayout) isHint(b byte) bool {
-	return l != nil && l.hintTable[b]
-}
-
 func (l *byteLayout) hintByte(val, pos byte) byte {
 	return l.encodeHint[val&0x03][pos&0x0F]
 }
