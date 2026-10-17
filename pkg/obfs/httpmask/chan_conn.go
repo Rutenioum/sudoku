@@ -26,11 +26,11 @@ import (
 	"time"
 )
 
-// queuedConn provides a net.Conn-like interface backed by internal channels.
+// chanConn provides a net.Conn-like interface backed by internal channels.
 //
 // It is used by HTTP tunnel modes (stream/poll) to bridge HTTP request/response bodies to
 // a byte-stream API while preserving CloseWrite semantics.
-type queuedConn struct {
+type chanConn struct {
 	rxc    chan []byte
 	closed chan struct{}
 
@@ -53,13 +53,13 @@ type queuedConn struct {
 	remoteAddr net.Addr
 }
 
-const queuedConnPayloadQueueDepth = 64
+const chanConnQueueDepth = 64
 
-func newQueuedConn() queuedConn {
-	return queuedConn{
-		rxc:         make(chan []byte, queuedConnPayloadQueueDepth),
+func newChanConn() chanConn {
+	return chanConn{
+		rxc:         make(chan []byte, chanConnQueueDepth),
 		closed:      make(chan struct{}),
-		writeCh:     make(chan []byte, queuedConnPayloadQueueDepth),
+		writeCh:     make(chan []byte, chanConnQueueDepth),
 		writeClosed: make(chan struct{}),
 		writeDone:   make(chan struct{}),
 		readEOF:     make(chan struct{}),
@@ -68,7 +68,7 @@ func newQueuedConn() queuedConn {
 	}
 }
 
-func (c *queuedConn) CloseWrite() error {
+func (c *chanConn) CloseWrite() error {
 	c.writeGate.Lock()
 	if !isClosedPipeChan(c.writeClosed) {
 		close(c.writeClosed)
@@ -88,14 +88,14 @@ func (c *queuedConn) CloseWrite() error {
 	}
 }
 
-func (c *queuedConn) completedWriteErr() error {
+func (c *chanConn) completedWriteErr() error {
 	c.mu.Lock()
 	err := c.writeErr
 	c.mu.Unlock()
 	return err
 }
 
-func (c *queuedConn) completeWrite(err error) {
+func (c *chanConn) completeWrite(err error) {
 	c.mu.Lock()
 	if c.writeErr == nil {
 		c.writeErr = err
@@ -104,11 +104,11 @@ func (c *queuedConn) completeWrite(err error) {
 	c.writeDoneOnce.Do(func() { close(c.writeDone) })
 }
 
-func (c *queuedConn) markReadEOF() {
+func (c *chanConn) markReadEOF() {
 	c.readEOFOnce.Do(func() { close(c.readEOF) })
 }
 
-func (c *queuedConn) closeWithError(err error) error {
+func (c *chanConn) closeWithError(err error) error {
 	c.mu.Lock()
 	select {
 	case <-c.closed:
@@ -127,7 +127,7 @@ func (c *queuedConn) closeWithError(err error) error {
 	return nil
 }
 
-func (c *queuedConn) closedErr() error {
+func (c *chanConn) closedErr() error {
 	c.mu.Lock()
 	err := c.closeErr
 	c.mu.Unlock()
@@ -137,7 +137,7 @@ func (c *queuedConn) closedErr() error {
 	return err
 }
 
-func (c *queuedConn) Read(b []byte) (n int, err error) {
+func (c *chanConn) Read(b []byte) (n int, err error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
 
@@ -165,7 +165,7 @@ func (c *queuedConn) Read(b []byte) (n int, err error) {
 	return n, nil
 }
 
-func (c *queuedConn) Write(b []byte) (n int, err error) {
+func (c *chanConn) Write(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
@@ -192,9 +192,9 @@ func (c *queuedConn) Write(b []byte) (n int, err error) {
 	}
 }
 
-func (c *queuedConn) LocalAddr() net.Addr  { return c.localAddr }
-func (c *queuedConn) RemoteAddr() net.Addr { return c.remoteAddr }
+func (c *chanConn) LocalAddr() net.Addr  { return c.localAddr }
+func (c *chanConn) RemoteAddr() net.Addr { return c.remoteAddr }
 
-func (c *queuedConn) SetDeadline(time.Time) error      { return nil }
-func (c *queuedConn) SetReadDeadline(time.Time) error  { return nil }
-func (c *queuedConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *chanConn) SetDeadline(time.Time) error      { return nil }
+func (c *chanConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *chanConn) SetWriteDeadline(time.Time) error { return nil }

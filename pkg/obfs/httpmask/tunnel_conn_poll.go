@@ -33,7 +33,7 @@ import (
 )
 
 type pollConn struct {
-	queuedConn
+	chanConn
 	readiness *tunnelReadiness
 
 	ctx    context.Context
@@ -49,7 +49,7 @@ type pollConn struct {
 }
 
 func (c *pollConn) closeWithError(err error) error {
-	_ = c.queuedConn.closeWithError(err)
+	_ = c.chanConn.closeWithError(err)
 	c.cancel()
 	_ = sendSessionControl(c.client, c.closeURL, c.headerHost, TunnelModePoll)
 	return nil
@@ -76,7 +76,7 @@ func dialPoll(ctx context.Context, serverAddress string, opts TunnelDialOptions)
 		finURL:     info.finURL,
 		closeURL:   info.closeURL,
 		headerHost: info.headerHost,
-		queuedConn: newQueuedConn(),
+		chanConn:   newChanConn(),
 	}
 
 	go c.pullLoop()

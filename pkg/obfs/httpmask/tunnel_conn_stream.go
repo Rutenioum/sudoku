@@ -32,7 +32,7 @@ import (
 )
 
 type streamSplitConn struct {
-	queuedConn
+	chanConn
 	readiness *tunnelReadiness
 
 	ctx    context.Context
@@ -52,7 +52,7 @@ func (c *streamSplitConn) Close() error {
 }
 
 func (c *streamSplitConn) closeWithError(err error) error {
-	_ = c.queuedConn.closeWithError(err)
+	_ = c.chanConn.closeWithError(err)
 
 	c.cancel()
 
@@ -77,7 +77,7 @@ func dialStream(ctx context.Context, serverAddress string, opts TunnelDialOption
 		finURL:     info.finURL,
 		closeURL:   info.closeURL,
 		headerHost: info.headerHost,
-		queuedConn: newQueuedConn(),
+		chanConn:   newChanConn(),
 	}
 
 	go c.pullLoop()

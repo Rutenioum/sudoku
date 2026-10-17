@@ -177,7 +177,7 @@ func (s *TunnelServer) HandleConn(rawConn net.Conn) (HandleResult, net.Conn, err
 		if s.passThroughOnReject {
 			return passThroughRejected(prefix)
 		}
-		_ = writeSimpleHTTPResponse(rawConn, http.StatusNotFound, "not found")
+		_ = writeTextResponse(rawConn, http.StatusNotFound, "not found")
 		_ = rawConn.Close()
 		return HandleDone, nil, nil
 	}
@@ -483,14 +483,14 @@ func (c *bodyConn) Close() error {
 	return firstErr
 }
 
-func (s *TunnelServer) rejectOrReply(rawConn net.Conn, headerBytes, buffered []byte, code int, body string) (HandleResult, net.Conn, error) {
+func (s *TunnelServer) rejectOrRespond(rawConn net.Conn, headerBytes, buffered []byte, code int, body string) (HandleResult, net.Conn, error) {
 	if s.passThroughOnReject {
 		prefix := make([]byte, 0, len(headerBytes)+len(buffered))
 		prefix = append(prefix, headerBytes...)
 		prefix = append(prefix, buffered...)
 		return HandlePassThrough, newRejectedPreBufferedConn(rawConn, prefix), nil
 	}
-	_ = writeSimpleHTTPResponse(rawConn, code, body)
+	_ = writeTextResponse(rawConn, code, body)
 	_ = rawConn.Close()
 	return HandleDone, nil, nil
 }
@@ -498,13 +498,13 @@ func (s *TunnelServer) rejectOrReply(rawConn net.Conn, headerBytes, buffered []b
 func (s *TunnelServer) handleStream(rawConn net.Conn, req *httpRequestHeader, headerBytes []byte, buffered []byte) (HandleResult, net.Conn, error) {
 	u, err := url.ParseRequestURI(req.target)
 	if err != nil {
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 	}
 
 	// Only accept plausible paths to reduce accidental exposure.
 	path, ok := stripPathRoot(s.pathRoot, u.Path)
 	if !ok || !isAllowedBasePath(path) {
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 	}
 	token := u.Query().Get("token")
 	closeFlag := u.Query().Get("close") == "1"
@@ -516,46 +516,46 @@ func (s *TunnelServer) handleStream(rawConn net.Conn, req *httpRequestHeader, he
 		if token == "" && path == "/session" {
 			earlyPayload, err := parseEarlyDataQuery(u)
 			if err != nil {
-				return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+				return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 			}
 			return s.sessionAuthorize(rawConn, headerBytes, buffered, earlyPayload)
 		}
 		// Stream Split Session: GET /stream?token=... => downlink poll.
 		if token != "" && path == "/stream" {
 			if s.passThroughOnReject && !s.sessionHas(token) {
-				return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+				return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 			}
 			return s.streamPull(rawConn, token)
 		}
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 
 	case http.MethodPost:
 		// Stream Split Session: POST /api/v1/upload?token=... => uplink push.
 		if token != "" && path == "/api/v1/upload" {
 			if closeFlag {
 				s.sessionClose(token)
-				_ = writeSimpleHTTPResponse(rawConn, http.StatusOK, "")
+				_ = writeTextResponse(rawConn, http.StatusOK, "")
 				_ = rawConn.Close()
 				return HandleDone, nil, nil
 			}
 			if finFlag {
 				s.sessionCloseWrite(token)
-				_ = writeSimpleHTTPResponse(rawConn, http.StatusOK, "")
+				_ = writeTextResponse(rawConn, http.StatusOK, "")
 				_ = rawConn.Close()
 				return HandleDone, nil, nil
 			}
 			if s.passThroughOnReject && !s.sessionHas(token) {
-				return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+				return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 			}
 			bodyReader, err := newRequestBodyReader(newPreBufferedConn(rawConn, buffered), req.headers)
 			if err != nil {
-				_ = writeSimpleHTTPResponse(rawConn, http.StatusBadRequest, "bad request")
+				_ = writeTextResponse(rawConn, http.StatusBadRequest, "bad request")
 				_ = rawConn.Close()
 				return HandleDone, nil, nil
 			}
 			sequence, err := parseUploadSequence(u)
 			if err != nil {
-				return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+				return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 			}
 			return s.streamPush(rawConn, token, sequence, bodyReader)
 		}
@@ -584,7 +584,7 @@ func (s *TunnelServer) handleStream(rawConn net.Conn, req *httpRequestHeader, he
 		return HandleStartTunnel, stream, nil
 
 	default:
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 	}
 }
 
@@ -641,7 +641,7 @@ func writeSessionPullResponseHeader(w io.Writer) error {
 	return err
 }
 
-func writeSimpleHTTPResponse(w io.Writer, code int, body string) error {
+func writeTextResponse(w io.Writer, code int, body string) error {
 	if body == "" {
 		body = http.StatusText(code)
 	}
@@ -669,12 +669,12 @@ func writeTokenHTTPResponse(w io.Writer, token string, earlyPayload []byte) erro
 func (s *TunnelServer) handlePoll(rawConn net.Conn, req *httpRequestHeader, headerBytes []byte, buffered []byte) (HandleResult, net.Conn, error) {
 	u, err := url.ParseRequestURI(req.target)
 	if err != nil {
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 	}
 
 	path, ok := stripPathRoot(s.pathRoot, u.Path)
 	if !ok || !isAllowedBasePath(path) {
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 	}
 	token := u.Query().Get("token")
 	closeFlag := u.Query().Get("close") == "1"
@@ -684,57 +684,57 @@ func (s *TunnelServer) handlePoll(rawConn net.Conn, req *httpRequestHeader, head
 		if token == "" && path == "/session" {
 			earlyPayload, err := parseEarlyDataQuery(u)
 			if err != nil {
-				return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+				return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 			}
 			return s.sessionAuthorize(rawConn, headerBytes, buffered, earlyPayload)
 		}
 		if path == "/stream" {
 			if s.passThroughOnReject && !s.sessionHas(token) {
-				return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+				return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 			}
 			return s.pollPull(rawConn, token)
 		}
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 	case http.MethodPost:
 		if path != "/api/v1/upload" {
-			return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+			return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 		}
 		if token == "" {
-			return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "missing token")
+			return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "missing token")
 		}
 		if closeFlag {
 			s.sessionClose(token)
-			_ = writeSimpleHTTPResponse(rawConn, http.StatusOK, "")
+			_ = writeTextResponse(rawConn, http.StatusOK, "")
 			_ = rawConn.Close()
 			return HandleDone, nil, nil
 		}
 		if finFlag {
 			s.sessionCloseWrite(token)
-			_ = writeSimpleHTTPResponse(rawConn, http.StatusOK, "")
+			_ = writeTextResponse(rawConn, http.StatusOK, "")
 			_ = rawConn.Close()
 			return HandleDone, nil, nil
 		}
 		if s.passThroughOnReject && !s.sessionHas(token) {
-			return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+			return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 		}
 		bodyReader, err := newRequestBodyReader(newPreBufferedConn(rawConn, buffered), req.headers)
 		if err != nil {
-			return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+			return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 		}
 		sequence, err := parseUploadSequence(u)
 		if err != nil {
-			return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+			return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 		}
 		return s.pollPush(rawConn, token, sequence, bodyReader)
 	default:
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 	}
 }
 
 func (s *TunnelServer) sessionAuthorize(rawConn net.Conn, headerBytes, buffered, earlyPayload []byte) (HandleResult, net.Conn, error) {
 	token, err := newSessionToken()
 	if err != nil {
-		_ = writeSimpleHTTPResponse(rawConn, http.StatusInternalServerError, "internal error")
+		_ = writeTextResponse(rawConn, http.StatusInternalServerError, "internal error")
 		_ = rawConn.Close()
 		return HandleDone, nil, nil
 	}
@@ -748,7 +748,7 @@ func (s *TunnelServer) sessionAuthorize(rawConn net.Conn, headerBytes, buffered,
 		if err != nil {
 			_ = c1.Close()
 			_ = c2.Close()
-			return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+			return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 		}
 		responsePayload = prepared.ResponsePayload
 		userHash = prepared.UserHash
@@ -757,7 +757,7 @@ func (s *TunnelServer) sessionAuthorize(rawConn net.Conn, headerBytes, buffered,
 			if err != nil {
 				_ = c1.Close()
 				_ = c2.Close()
-				_ = writeSimpleHTTPResponse(rawConn, http.StatusInternalServerError, "internal error")
+				_ = writeTextResponse(rawConn, http.StatusInternalServerError, "internal error")
 				_ = rawConn.Close()
 				return HandleDone, nil, nil
 			}
@@ -983,9 +983,9 @@ func (s *TunnelServer) writeSessionUpload(token string, sess *tunnelSession, seq
 
 func writeUploadResult(rawConn net.Conn, err error) (HandleResult, net.Conn, error) {
 	if errors.Is(err, errUploadSequenceGap) {
-		_ = writeSimpleHTTPResponse(rawConn, http.StatusConflict, "sequence gap")
+		_ = writeTextResponse(rawConn, http.StatusConflict, "sequence gap")
 	} else {
-		_ = writeSimpleHTTPResponse(rawConn, http.StatusGone, "gone")
+		_ = writeTextResponse(rawConn, http.StatusGone, "gone")
 	}
 	_ = rawConn.Close()
 	return HandleDone, nil, nil
@@ -994,14 +994,14 @@ func writeUploadResult(rawConn net.Conn, err error) (HandleResult, net.Conn, err
 func (s *TunnelServer) pollPush(rawConn net.Conn, token string, sequence uint64, body io.Reader) (HandleResult, net.Conn, error) {
 	sess, ok := s.sessionGet(token)
 	if !ok {
-		_ = writeSimpleHTTPResponse(rawConn, http.StatusForbidden, "forbidden")
+		_ = writeTextResponse(rawConn, http.StatusForbidden, "forbidden")
 		_ = rawConn.Close()
 		return HandleDone, nil, nil
 	}
 
 	payload, err := io.ReadAll(io.LimitReader(body, 1<<20)) // 1MiB per request cap
 	if err != nil {
-		_ = writeSimpleHTTPResponse(rawConn, http.StatusBadRequest, "bad request")
+		_ = writeTextResponse(rawConn, http.StatusBadRequest, "bad request")
 		_ = rawConn.Close()
 		return HandleDone, nil, nil
 	}
@@ -1015,7 +1015,7 @@ func (s *TunnelServer) pollPush(rawConn net.Conn, token string, sequence uint64,
 		decoded := make([]byte, base64.StdEncoding.DecodedLen(len(line)))
 		n, decErr := base64.StdEncoding.Decode(decoded, line)
 		if decErr != nil {
-			_ = writeSimpleHTTPResponse(rawConn, http.StatusBadRequest, "bad request")
+			_ = writeTextResponse(rawConn, http.StatusBadRequest, "bad request")
 			_ = rawConn.Close()
 			return HandleDone, nil, nil
 		}
@@ -1032,7 +1032,7 @@ func (s *TunnelServer) pollPush(rawConn net.Conn, token string, sequence uint64,
 		return writeUploadResult(rawConn, err)
 	}
 
-	_ = writeSimpleHTTPResponse(rawConn, http.StatusOK, "")
+	_ = writeTextResponse(rawConn, http.StatusOK, "")
 	_ = rawConn.Close()
 	return HandleDone, nil, nil
 }
@@ -1040,7 +1040,7 @@ func (s *TunnelServer) pollPush(rawConn net.Conn, token string, sequence uint64,
 func (s *TunnelServer) streamPush(rawConn net.Conn, token string, sequence uint64, body io.Reader) (HandleResult, net.Conn, error) {
 	sess, ok := s.sessionGet(token)
 	if !ok {
-		_ = writeSimpleHTTPResponse(rawConn, http.StatusForbidden, "forbidden")
+		_ = writeTextResponse(rawConn, http.StatusForbidden, "forbidden")
 		_ = rawConn.Close()
 		return HandleDone, nil, nil
 	}
@@ -1048,12 +1048,12 @@ func (s *TunnelServer) streamPush(rawConn net.Conn, token string, sequence uint6
 	const maxUploadBytes = 1 << 20
 	payload, err := io.ReadAll(io.LimitReader(body, maxUploadBytes+1))
 	if err != nil {
-		_ = writeSimpleHTTPResponse(rawConn, http.StatusBadRequest, "bad request")
+		_ = writeTextResponse(rawConn, http.StatusBadRequest, "bad request")
 		_ = rawConn.Close()
 		return HandleDone, nil, nil
 	}
 	if len(payload) > maxUploadBytes {
-		_ = writeSimpleHTTPResponse(rawConn, http.StatusRequestEntityTooLarge, "too large")
+		_ = writeTextResponse(rawConn, http.StatusRequestEntityTooLarge, "too large")
 		_ = rawConn.Close()
 		return HandleDone, nil, nil
 	}
@@ -1065,7 +1065,7 @@ func (s *TunnelServer) streamPush(rawConn net.Conn, token string, sequence uint6
 		return writeUploadResult(rawConn, err)
 	}
 
-	_ = writeSimpleHTTPResponse(rawConn, http.StatusOK, "")
+	_ = writeTextResponse(rawConn, http.StatusOK, "")
 	_ = rawConn.Close()
 	return HandleDone, nil, nil
 }
@@ -1131,14 +1131,14 @@ func (s *TunnelServer) endSessionPull(token string, sess *tunnelSession, lease *
 func (s *TunnelServer) sessionPull(rawConn net.Conn, token string, keepalive bool, writePayload func(io.Writer, []byte) error) (HandleResult, net.Conn, error) {
 	sess, ok := s.sessionGet(token)
 	if !ok {
-		_ = writeSimpleHTTPResponse(rawConn, http.StatusForbidden, "forbidden")
+		_ = writeTextResponse(rawConn, http.StatusForbidden, "forbidden")
 		_ = rawConn.Close()
 		return HandleDone, nil, nil
 	}
 
 	lease, ok := s.beginSessionPull(token, sess, rawConn)
 	if !ok {
-		_ = writeSimpleHTTPResponse(rawConn, http.StatusForbidden, "forbidden")
+		_ = writeTextResponse(rawConn, http.StatusForbidden, "forbidden")
 		_ = rawConn.Close()
 		return HandleDone, nil, nil
 	}

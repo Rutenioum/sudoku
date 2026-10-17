@@ -126,15 +126,15 @@ func buildHTTPRequestFromHeaderBytes(headerBytes []byte, rawConn net.Conn) (*htt
 func (s *TunnelServer) handleWS(rawConn net.Conn, req *httpRequestHeader, headerBytes []byte, buffered []byte) (HandleResult, net.Conn, error) {
 	u, err := url.ParseRequestURI(req.target)
 	if err != nil {
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 	}
 
 	path, ok := stripPathRoot(s.pathRoot, u.Path)
 	if !ok || path != "/ws" {
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 	}
 	if strings.ToUpper(strings.TrimSpace(req.method)) != http.MethodGet {
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 	}
 
 	authVal := req.headers["authorization"]
@@ -142,18 +142,18 @@ func (s *TunnelServer) handleWS(rawConn net.Conn, req *httpRequestHeader, header
 		authVal = u.Query().Get(tunnelAuthQueryKey)
 	}
 	if !s.auth.verifyValue(authVal, TunnelModeWS, req.method, path, time.Now()) {
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 	}
 
 	earlyPayload, err := parseEarlyDataQuery(u)
 	if err != nil {
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 	}
 	var prepared *PreparedServerEarlyHandshake
 	if len(earlyPayload) > 0 && s.earlyHandshake != nil && s.earlyHandshake.Prepare != nil {
 		prepared, err = s.earlyHandshake.Prepare(earlyPayload)
 		if err != nil {
-			return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+			return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
 		}
 	}
 
@@ -161,7 +161,7 @@ func (s *TunnelServer) handleWS(rawConn net.Conn, req *httpRequestHeader, header
 	wsConnRaw := newPreBufferedConn(rawConn, buffered)
 	r, err := buildHTTPRequestFromHeaderBytes(headerBytes, rawConn)
 	if err != nil {
-		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+		return s.rejectOrRespond(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
 	}
 
 	rw := &hijackRW{conn: wsConnRaw}

@@ -539,9 +539,9 @@ func TestTunnelServer_SessionTTL_ReapsAfterIdle(t *testing.T) {
 	t.Fatalf("session not reaped: %q", token)
 }
 
-func TestQueuedConn_ConcurrentWriteCloseWrite_NoPanic(t *testing.T) {
+func TestChanConn_ConcurrentWriteCloseWrite_NoPanic(t *testing.T) {
 	const writers = 1000
-	c := newQueuedConn()
+	c := newChanConn()
 	go func() {
 		for {
 			select {
