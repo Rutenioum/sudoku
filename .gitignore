@@ -1,5 +1,17 @@
+# build outputs
 /sudoku
 /bin
 /dist
+*.exe
+*.test
+
+# profiles and coverage (make profile writes cpu.out / mem.out)
+*.out
+*.prof
+*.pprof
+
+# editors, OS and local assistant state
 .DS_Store
 .idea/
+.vscode/
+.claude/
