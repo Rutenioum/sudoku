@@ -99,6 +99,8 @@ func writeKIPOpenTCP(w io.Writer, addr string) error {
 	return connutil.WriteFull(w, buf)
 }
 
+// WriteKIPMessage sends header and payload with a single write, so the transport frames
+// them as one record.
 func WriteKIPMessage(w io.Writer, typ byte, payload []byte) error {
 	if w == nil {
 		return fmt.Errorf("%w: nil writer", errKIP)
@@ -106,26 +108,15 @@ func WriteKIPMessage(w io.Writer, typ byte, payload []byte) error {
 	if len(payload) > kipMaxPayload {
 		return fmt.Errorf("%w: payload too large: %d", errKIP, len(payload))
 	}
-
-	var hdr [3 + 1 + 2]byte
-	copy(hdr[:3], []byte(kipMagic))
-	hdr[3] = typ
-	binary.BigEndian.PutUint16(hdr[4:], uint16(len(payload)))
-
-	if err := connutil.WriteFull(w, hdr[:]); err != nil {
-		return err
-	}
-	if len(payload) == 0 {
-		return nil
-	}
-	return connutil.WriteFull(w, payload)
+	buf := appendKIPHeader(make([]byte, 0, kipHeaderSize+len(payload)), typ, len(payload))
+	return connutil.WriteFull(w, append(buf, payload...))
 }
 
 func ReadKIPMessage(r io.Reader) (*KIPMessage, error) {
 	if r == nil {
 		return nil, fmt.Errorf("%w: nil reader", errKIP)
 	}
-	var hdr [3 + 1 + 2]byte
+	var hdr [kipHeaderSize]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return nil, err
 	}

@@ -331,3 +331,24 @@ func TestUoTDecodeMappedIPv6AsIPv4(t *testing.T) {
 		t.Errorf("got (%q, %q), want (9.9.9.9:5353, m)", host, payload)
 	}
 }
+
+type writeCounter struct{ writes int }
+
+func (c *writeCounter) Write(p []byte) (int, error) { c.writes++; return len(p), nil }
+
+// Each KIP message must reach the transport as one write so it is framed as one record.
+func TestKIPMessagesAreSingleWrite(t *testing.T) {
+	var c writeCounter
+	if err := WriteKIPMessage(&c, KIPTypeServerHello, make([]byte, 52)); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteKIPMessage(&c, KIPTypeStartMux, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeKIPOpenTCP(&c, "example.com:443"); err != nil {
+		t.Fatal(err)
+	}
+	if c.writes != 3 {
+		t.Errorf("3 messages took %d writes", c.writes)
+	}
+}
