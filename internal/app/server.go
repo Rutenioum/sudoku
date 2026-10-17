@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
-	"github.com/SUDOKU-ASCII/sudoku/internal/handler"
 	"github.com/SUDOKU-ASCII/sudoku/internal/protocol"
 	"github.com/SUDOKU-ASCII/sudoku/internal/reverse"
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
@@ -145,7 +144,7 @@ func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Tab
 			if r, ok := c.(interface{ IsHTTPMaskRejected() bool }); ok && r.IsHTTPMaskRejected() {
 				// Replay the rejected HTTPMask prefix once, then continue streaming from the raw TCP conn.
 				// Passing the replay wrapper as both arguments would duplicate the prefix on fallback.
-				handler.HandleSuspicious(c, rawConn, cfg)
+				handleSuspicious(c, rawConn, cfg)
 				return
 			}
 			handleSudokuServerConn(c, rawConn, cfg, tables, true, revMgr, userReg)
@@ -178,7 +177,7 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 			if allowFallback {
 				// Use handshakeConn for proxying so we preserve any pre-read/replayed bytes (e.g. HTTP tunnel pass-through prefixes),
 				// but still use suspErr.Conn to extract any consumed/recorded bytes for the fallback.
-				handler.HandleSuspicious(suspErr.Conn, handshakeConn, cfg)
+				handleSuspicious(suspErr.Conn, handshakeConn, cfg)
 			} else {
 				rawConn.Close()
 			}

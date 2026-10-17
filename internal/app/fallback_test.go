@@ -17,7 +17,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 In addition, no derivative work may use the name or imply association
 with this application without prior consent.
 */
-package handler
+package app
 
 import (
 	"io"
@@ -37,7 +37,7 @@ func (r *recordedConn) GetBufferedAndRecorded() []byte {
 	return r.data
 }
 
-func TestHandleSuspiciousFallback(t *testing.T) {
+func TestHandleSuspiciousReplaysRecordedBytes(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -65,7 +65,7 @@ func TestHandleSuspiciousFallback(t *testing.T) {
 
 	wrapper := &recordedConn{Conn: serverSide, data: []byte("bad")}
 
-	go HandleSuspicious(wrapper, serverSide, cfg)
+	go handleSuspicious(wrapper, serverSide, cfg)
 
 	// Write extra data that should also be forwarded
 	if _, err := clientSide.Write([]byte("tail")); err != nil {
