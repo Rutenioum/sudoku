@@ -155,8 +155,6 @@ func normalizeServerType(serverType string) string {
 		return "local"
 	case "https", "doh":
 		return "https"
-	case "tls", "dot":
-		return "dot"
 	default:
 		return strings.ToLower(strings.TrimSpace(serverType))
 	}
@@ -182,14 +180,6 @@ func validateServerOptions(srv ServerOptions) error {
 			return fmt.Errorf("https server requires address")
 		}
 		if _, _, _, err := parseHTTPSEndpoint(srv.Address, srv.Path); err != nil {
-			return err
-		}
-		return validateBootstrapAddrs(srv.Bootstrap)
-	case "dot":
-		if strings.TrimSpace(srv.Address) == "" {
-			return fmt.Errorf("dot server requires address")
-		}
-		if _, _, err := parseTLSEndpoint(srv.Address); err != nil {
 			return err
 		}
 		return validateBootstrapAddrs(srv.Bootstrap)
