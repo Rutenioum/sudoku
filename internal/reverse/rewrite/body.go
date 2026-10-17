@@ -32,8 +32,16 @@ import (
 const maxBody = 8 << 20
 
 // readCapped reads at most maxBody+1 bytes so callers can tell "over the cap" from "exactly the cap".
-func readCapped(r io.Reader) ([]byte, error) {
-	return io.ReadAll(io.LimitReader(r, maxBody+1))
+// A positive sizeHint is the expected length and lets the body land in a single allocation.
+func readCapped(r io.Reader, sizeHint int64) ([]byte, error) {
+	limited := io.LimitReader(r, maxBody+1)
+	if sizeHint <= 0 {
+		return io.ReadAll(limited)
+	}
+	var buf bytes.Buffer
+	buf.Grow(int(min(sizeHint, maxBody)) + bytes.MinRead)
+	_, err := buf.ReadFrom(limited)
+	return buf.Bytes(), err
 }
 
 func rewriteTextBody(resp *http.Response, prefix string) error {
@@ -80,7 +88,7 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 	}
 
 	if encoding == "gzip" {
-		compressed, err := readCapped(resp.Body)
+		compressed, err := readCapped(resp.Body, resp.ContentLength)
 		if err != nil {
 			return err
 		}
@@ -95,7 +103,7 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 			setBody(compressed)
 			return nil
 		}
-		raw, err := readCapped(gr)
+		raw, err := readCapped(gr, 0)
 		_ = gr.Close()
 		if err != nil {
 			return err
@@ -117,7 +125,7 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 		return nil
 	}
 
-	raw, err := readCapped(resp.Body)
+	raw, err := readCapped(resp.Body, resp.ContentLength)
 	if err != nil {
 		return err
 	}
