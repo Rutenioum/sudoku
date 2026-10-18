@@ -386,3 +386,20 @@ func TestUpdate_AppliesEachSourceIncrementally(t *testing.T) {
 		t.Fatalf("expected second source to be applied after its download completed")
 	}
 }
+
+func TestManagerStats(t *testing.T) {
+	t.Setenv("SUDOKU_RULE_CACHE_DIR", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("payload:\n  - DOMAIN,a.example\n  - DOMAIN-SUFFIX,b.example\n  - IP-CIDR,10.0.0.0/8\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	m := NewManager([]string{srv.URL})
+	if n, updated := m.Stats(); n != 0 || !updated.IsZero() {
+		t.Fatalf("before update: %d entries at %v", n, updated)
+	}
+	m.Update()
+	if n, updated := m.Stats(); n != 3 || updated.IsZero() {
+		t.Fatalf("after update: %d entries at %v, want 3 entries", n, updated)
+	}
+}

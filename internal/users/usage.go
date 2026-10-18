@@ -147,10 +147,7 @@ func (r *Registry) totalUsed() (total uint64) {
 }
 
 func (r *Registry) each(fn func(*User)) {
-	for _, u := range r.exact {
-		fn(u)
-	}
-	for _, u := range r.prefixed {
+	for _, u := range r.all {
 		fn(u)
 	}
 }

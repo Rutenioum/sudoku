@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -153,6 +154,43 @@ func TestPendingBytesChargedOnBind(t *testing.T) {
 	}
 }
 
+func TestStatsSplitDirectionsInConfigOrder(t *testing.T) {
+	reg, err := NewRegistry([]config.UserConfig{
+		{Key: "0123456789abcdef", Alias: "full", Data: 1},
+		{Key: "aabbccddeeff", Alias: "prefix", Blocked: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := reg.Lookup("0123456789abcdef")
+	a, b := net.Pipe()
+	defer b.Close()
+	w := u.WrapWire(a)
+	go func() {
+		b.Write(make([]byte, 30)) // up 30
+		io.Copy(io.Discard, b)
+	}()
+	if _, err := io.ReadFull(w, make([]byte, 30)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(make([]byte, 70)); err != nil { // down 70
+		t.Fatal(err)
+	}
+
+	stats := reg.Stats()
+	want := []Stat{
+		{Name: "full", Conns: 1, Up: 30, Down: 70, Used: 100, Limit: 1e9},
+		{Name: "prefix", Blocked: true},
+	}
+	if !slices.Equal(stats, want) {
+		t.Fatalf("Stats() = %+v, want %+v", stats, want)
+	}
+	w.Close()
+	if got := reg.Stats()[0].Conns; got != 0 {
+		t.Fatalf("Conns after close = %d", got)
+	}
+}
+
 func TestUsagePersistsAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.usage.json")
 	cfgs := []config.UserConfig{
@@ -164,8 +202,8 @@ func TestUsagePersistsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("missing file must not fail: %v", err)
 	}
-	reg.Lookup("0123456789abcdef").addUsage(10_000)
-	reg.Lookup("aabbccddeeff0000").addUsage(42)
+	reg.Lookup("0123456789abcdef").addTraffic(upload, 10_000)
+	reg.Lookup("aabbccddeeff0000").addTraffic(upload, 42)
 	stop() // a clean shutdown saves even though the ticker never fired
 
 	// The restarted server restores this month and drops users removed from the config.
@@ -208,7 +246,7 @@ func TestUsageResetsMonthly(t *testing.T) {
 	}
 
 	// Rolling over while running clears quotas, including the kicked state.
-	u.addUsage(10_000)
+	u.addTraffic(upload, 10_000)
 	reg.resetUsage()
 	if u.Exceeded() || u.kicked.Load() {
 		t.Fatalf("reset left used=%d kicked=%v", u.used.Load(), u.kicked.Load())

@@ -80,11 +80,14 @@ func TestBalancedDialerFallsBackToNextCandidate(t *testing.T) {
 	}
 
 	key := findStickyKeyForFirstNode("primary", "secondary")
-	conn, err := lb.DialWithStickyKey("example.com:443", key)
+	conn, idx, err := lb.DialNode("example.com:443", key)
 	if err != nil {
-		t.Fatalf("DialWithStickyKey error: %v", err)
+		t.Fatalf("DialNode error: %v", err)
 	}
 	_ = conn.Close()
+	if idx != 1 {
+		t.Fatalf("DialNode reported node %d, want the fallback node 1", idx)
+	}
 
 	if primary.dials != 1 {
 		t.Fatalf("expected one attempt on primary, got %d", primary.dials)

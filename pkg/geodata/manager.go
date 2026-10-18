@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/pkg/logx"
 )
@@ -36,6 +37,7 @@ type ruleSnapshot struct {
 	exact    map[string]struct{} // DOMAIN
 	keywords []string            // DOMAIN-KEYWORD
 	suffix   map[string]struct{} // DOMAIN-SUFFIX
+	updated  time.Time
 }
 
 var emptyRules = &ruleSnapshot{}
@@ -44,6 +46,7 @@ type Manager struct {
 	rules    atomic.Pointer[ruleSnapshot]
 	urls     []string
 	cacheDir string
+	updateMu sync.Mutex // one Update at a time
 }
 
 var instances sync.Map
@@ -77,6 +80,8 @@ func cacheKeyForURLs(urls []string) string {
 }
 
 func (m *Manager) Update() {
+	m.updateMu.Lock()
+	defer m.updateMu.Unlock()
 	logx.Infof("GeoData", "Updating rules from %d sources...", len(m.urls))
 
 	state := newRuleBuildState()
@@ -97,6 +102,13 @@ func (m *Manager) Update() {
 	}
 }
 
+// Stats reports how many entries the loaded rules hold and when they last changed; updated is
+// zero until the first source loads.
+func (m *Manager) Stats() (entries int, updated time.Time) {
+	rules := m.snapshot()
+	return len(rules.ipv4) + len(rules.ipv6) + len(rules.exact) + len(rules.keywords) + len(rules.suffix), rules.updated
+}
+
 func (m *Manager) snapshot() *ruleSnapshot {
 	if rules := m.rules.Load(); rules != nil {
 		return rules
@@ -113,6 +125,7 @@ func (m *Manager) publish(state *ruleBuildState) {
 		exact:    state.exact,
 		keywords: slices.Sorted(maps.Keys(state.keyword)),
 		suffix:   state.suffix,
+		updated:  time.Now(),
 	})
 	state.shared = true
 }
