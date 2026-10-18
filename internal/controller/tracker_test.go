@@ -103,20 +103,19 @@ func TestConnectionsStreamAndCloseAll(t *testing.T) {
 		tracker.Open(Metadata{Host: name}, Route{Chains: []string{"DIRECT"}}, closerFunc(func() { closed <- name }))
 	}
 
+	// The server's ticker starts after this point, so two messages can never be closer than the
+	// floor to it, however late the first one is delivered.
+	start := time.Now()
 	ws := dialWS(t, srv, "/connections?interval=1")
-	var start time.Time
-	for i := range 2 { // the first message comes at once, the next after the interval
+	for range 2 { // the first message comes at once, the next after the interval
 		var snap connectionsJSON
 		readWS(t, ws, &snap)
 		if len(snap.Connections) != 2 {
 			t.Fatalf("streamed %d connections", len(snap.Connections))
 		}
-		if i == 0 {
-			start = time.Now()
-		}
 	}
-	if gap := time.Since(start); gap < minConnectionsInterval*9/10 {
-		t.Fatalf("interval=1 streamed again after %v, below the floor", gap)
+	if elapsed := time.Since(start); elapsed < minConnectionsInterval {
+		t.Fatalf("interval=1 streamed again after %v, below the floor", elapsed)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
