@@ -20,7 +20,7 @@ Docs map:
 - Export short link from config:
   - client config: `./sudoku -c client.config.json -export-link`
   - server config: `./sudoku -c server.config.json -export-link -public-host host[:port]` (or set `server_address` in config)
-- Interactive setup (creates server/client configs + link, then starts server): `./sudoku -tui [-public-host your.ip]`
+- Interactive setup (asks for address, port, node name, AEAD and ASCII mode; writes server/client configs + link, then starts the server): `./sudoku -tui [-public-host your.ip]`
 
 ## Key (most important)
 `key` is the shared secret used to build the Sudoku mapping table and to derive the AEAD key (via SHA-256).
@@ -285,7 +285,7 @@ WantedBy=multi-user.target
 - 从配置导出短链：
   - 客户端配置：`./sudoku -c client.config.json -export-link`
   - 服务端配置：`./sudoku -c server.config.json -export-link -public-host 域名[:端口]`（或在配置里写 `server_address`）
-- 交互式配置并启动服务端：`./sudoku -tui [-public-host 服务器IP]`
+- 交互式配置并启动服务端（只问地址、端口、节点名、AEAD 与 ASCII 模式）：`./sudoku -tui [-public-host 服务器IP]`
 
 ## key（最关键）
 `key` 会用于生成数独映射表，同时也会被 SHA-256 后作为 AEAD 的派生密钥。

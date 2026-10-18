@@ -5,6 +5,8 @@
 
 ### 新功能
 - `users`: 服务端新增 `users` 白名单。按握手中的用户哈希识别用户（`key` 可填客户端私钥或 8–16 位哈希前缀，按长度区分），哈希不在列表中的连接即使握手成功也会被拒绝；每个用户可配置 `alias`（日志显示 `[User:alias]`）、`bandwidth`（`[服务端→客户端, 客户端→服务端]`，单位 Mbps，限制解码后的负载速率）、`data`（GB，按 wire 流量双向累计，用尽后断开并拒绝新连接）与 `blocked`。不配置 `users` 时行为不变，协议无改动。
+- `cli`: `-tui` 向导重做。分 节点 → 加密 → 确认 三页：只问公网地址、服务端端口（默认随机挑一个本机空闲的 30000 以上高位端口，输入时即检查能否监听）、节点名、AEAD 与 ASCII 模式，最后一页汇总确认后才写文件；Esc / Ctrl+C 取消且不写任何文件。其余项固定：padding 5–15%、纯 Sudoku 下行、不用自定义表、不开 mux，客户端 mixed 端口默认 10233。HTTP mask 预先配好 `auto` 模式与随机 path root（6–10 位）：服务端启用（同时接受裸 TCP），客户端配置与短链接带上同样的 mask 参数但 `disable: true`，以后只改这一项就能走 CDN。非终端环境仍退回逐行提问。
+- `config`: 新增可选的节点名，配置里是 `name`，短链接里是 `n`；`-export-link` 与 `-link` 双向保留，客户端启动日志里显示。旧短链接没有 `n` 也照常解析，其它实现会忽略这个字段。
 - `config`: 新增可选的节点名，配置里是 `name`，短链接里是 `n`；`-export-link` 与 `-link` 双向保留，客户端启动日志里显示。旧短链接没有 `n` 也照常解析，其它实现会忽略这个字段。
 
 ### 性能
@@ -47,7 +49,7 @@
 - `tests`: 新增 `users` 白名单在 no-httpmask、legacy、stream、poll、ws 下的端到端测试，以及 UoT 与 TCP 吞吐对比基准（`SUDOKU_UOT_BENCH=1`）。
 - `tests/interop`: 新增进程级互通测试 `TestInteropWithReference`，以 `SUDOKU_REF_BIN` 指向发布版二进制，在传输 × 编码矩阵上双向（当前客户端→参考服务端、参考客户端→当前服务端）运行回显、域名目标、大流量、半关闭、并发、UDP、fallback 与 key update 等负载，以及 reverse 代理；失败用例会自动以参考版对参考版做对照。
 - `tests/perfcmp`: 新增 `TestPerfCompare`，对照参考二进制报告吞吐、每单位工作量的 CPU、峰值与空闲 RSS，包含 1、16、64 并发建连场景。
-- 精简重复与过度细碎的测试，删除对已移除内部名字的测试，并用 v0.5.1 golden 向量固定编解码。
+- 精简重复与过度细碎的测试，删除对已移除内部名字的测试，并用 v0.5.1 golden 向量固定编解码；删除 `internal/cli` 的单测。
 
 ## v0.5.0（2026-09-05）
 - `BREAKING/httpmask`: 非 WebSocket 的 `auto`、`stream`、`poll` 重构为 v0.5 session 上传序列协议。每个上传批次带单调递增序号；CDN 在服务端已收包后丢失 HTTP 响应时，客户端以同一序号和原始负载重试，服务端幂等确认而不重复写入。非 WS HTTPMask 的客户端和服务端必须同时升级到 v0.5.0；旧 v0.4.x 非 WS peer 会被明确拒绝。

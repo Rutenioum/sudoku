@@ -20,6 +20,7 @@ with this application without prior consent.
 package main
 
 import (
+	"errors"
 	"flag"
 	"os"
 
@@ -112,12 +113,13 @@ func main() {
 
 	if *setupWizard {
 		result, err := cli.RunSetupWizard(configPaths.First("server.config.json"), *publicHost)
+		if errors.Is(err, cli.ErrSetupCancelled) {
+			logx.Infof("CLI", "Setup cancelled, nothing was written")
+			os.Exit(1)
+		}
 		if err != nil {
 			logx.Fatalf("CLI", "Setup failed: %v", err)
 		}
-		logx.Infof("CLI", "Server config saved to %s", result.ServerConfigPath)
-		logx.Infof("CLI", "Client config saved to %s", result.ClientConfigPath)
-		logx.Infof("CLI", "Short link: %s", result.ShortLink)
 
 		tables, err := app.BuildTables(result.ServerConfig)
 		if err != nil {
