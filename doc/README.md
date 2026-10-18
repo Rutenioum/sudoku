@@ -248,6 +248,7 @@ WantedBy=multi-user.target
 ## Short Link Format
 - Scheme: `sudoku://<base64url(json)>`
 - JSON payload fields:
+  - `n` node name (optional, shown by clients; same as `name` in config)
   - `h` host (server IP/FQDN) **required**
   - `p` port (server port) **required**
   - `k` key (public/shared) **required**
@@ -496,6 +497,7 @@ Sudoku 只有在真实 HTTP 隧道模式下才能过 CDN/代理：`stream` / `po
 ## 短链接格式
 - 形式：`sudoku://<base64url(json)>`
 - 字段：
+  - `n` 节点名称（可选，客户端用于显示；与配置里的 `name` 一致）
   - `h` 主机（必填），`p` 端口（必填），`k` 密钥（必填，公钥/共享密钥）
   - `a` ASCII 模式：`ascii` / `entropy`（默认 entropy）
   - `e` AEAD：`chacha20-poly1305`（默认）/`aes-128-gcm`/`none`

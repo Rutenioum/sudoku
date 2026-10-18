@@ -47,6 +47,7 @@ func (c *Config) Finalize() error {
 }
 
 func (c *Config) normalizeFields() {
+	c.Name = strings.TrimSpace(c.Name)
 	c.Mode = normalizeLower(c.Mode)
 	c.ServerAddress = strings.TrimSpace(c.ServerAddress)
 	c.FallbackAddr = strings.TrimSpace(c.FallbackAddr)

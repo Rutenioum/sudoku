@@ -20,8 +20,9 @@ with this application without prior consent.
 package config
 
 type Config struct {
-	Mode               string         `json:"mode"`      // "client" or "server"
-	Transport          string         `json:"transport"` // "tcp" or "udp"
+	Name               string         `json:"name,omitempty"` // Optional node name, carried in short links as "n"
+	Mode               string         `json:"mode"`           // "client" or "server"
+	Transport          string         `json:"transport"`      // "tcp" or "udp"
 	LocalPort          int            `json:"local_port"`
 	ServerAddress      string         `json:"server_address"`
 	FallbackAddr       string         `json:"fallback_address"`

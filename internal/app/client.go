@@ -111,7 +111,11 @@ func RunClientPool(configs []*config.Config, tableSets [][]*sudoku.Table) {
 
 	nodeLabels := make([]string, 0, len(runtimes))
 	for _, rt := range runtimes {
-		nodeLabels = append(nodeLabels, rt.NodeID)
+		label := rt.NodeID
+		if rt.Config.Name != "" {
+			label = rt.Config.Name + " (" + label + ")"
+		}
+		nodeLabels = append(nodeLabels, label)
 	}
 	logx.Infof("Client", "Client (Mixed) on :%d -> %s | Mode: %s | Rules: %d",
 		primary.Config.LocalPort, strings.Join(nodeLabels, ", "), primary.Config.ProxyMode, len(primary.Config.RuleURLs))

@@ -33,6 +33,7 @@ import (
 
 // shortLinkPayload holds the minimal fields we expose in sudoku:// links.
 type shortLinkPayload struct {
+	Name           string   `json:"n,omitempty"`  // optional node name
 	Host           string   `json:"h"`            // server host / IP
 	Port           int      `json:"p"`            // server port
 	Key            string   `json:"k"`            // shared key
@@ -67,6 +68,7 @@ func BuildShortLinkFromConfig(cfg *Config, advertiseHost string) (string, error)
 	}
 
 	payload := shortLinkPayload{
+		Name: strings.TrimSpace(cfg.Name),
 		Host: host,
 		Port: port,
 		Key:  cfg.Key,
@@ -133,6 +135,7 @@ func BuildConfigFromShortLink(link string) (*Config, error) {
 	}
 
 	cfg := &Config{
+		Name:          payload.Name,
 		Mode:          "client",
 		Transport:     "tcp",
 		LocalPort:     payload.MixPort,

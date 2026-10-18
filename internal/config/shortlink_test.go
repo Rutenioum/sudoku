@@ -329,3 +329,52 @@ func TestShortLinkMissingFields(t *testing.T) {
 		t.Fatalf("expected error for missing fields")
 	}
 }
+
+func TestShortLinkNodeName(t *testing.T) {
+	cfg := &Config{
+		Name:          " Tokyo 01 · 东京 ",
+		Mode:          "client",
+		LocalPort:     1080,
+		ServerAddress: "1.2.3.4:8443",
+		Key:           "deadbeef",
+		HTTPMask:      HTTPMaskConfig{Disable: true, Mode: "auto", PathRoot: "k3j9d2x7"},
+	}
+
+	link, err := BuildShortLinkFromConfig(cfg, "")
+	if err != nil {
+		t.Fatalf("BuildShortLinkFromConfig error: %v", err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(link, "sudoku://"))
+	if err != nil {
+		t.Fatalf("decode link: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if fields["n"] != "Tokyo 01 · 东京" {
+		t.Fatalf("n = %#v, want trimmed node name", fields["n"])
+	}
+
+	decoded, err := BuildConfigFromShortLink(link)
+	if err != nil {
+		t.Fatalf("BuildConfigFromShortLink error: %v", err)
+	}
+	if decoded.Name != "Tokyo 01 · 东京" {
+		t.Fatalf("name = %q", decoded.Name)
+	}
+	if !decoded.HTTPMask.Disable || decoded.HTTPMask.Mode != "auto" || decoded.HTTPMask.PathRoot != "k3j9d2x7" {
+		t.Fatalf("httpmask = %+v, want disabled auto mask with path root kept", decoded.HTTPMask)
+	}
+
+	// Links without "n" stay valid and decode to an unnamed node.
+	cfg.Name = ""
+	link, err = BuildShortLinkFromConfig(cfg, "")
+	if err != nil {
+		t.Fatalf("BuildShortLinkFromConfig error: %v", err)
+	}
+	raw, _ = base64.RawURLEncoding.DecodeString(strings.TrimPrefix(link, "sudoku://"))
+	if strings.Contains(string(raw), `"n"`) {
+		t.Fatalf("unnamed node must omit n: %s", raw)
+	}
+}

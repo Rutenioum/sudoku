@@ -64,6 +64,7 @@ Client (basic TCP):
 
 ### Basics
 - `mode`: `"server"` or `"client"`.
+- `name` (optional): node name; exported into short links as `n` and shown in client logs.
 - `local_port`:
   - server: public listening port
   - client: local mixed proxy port (HTTP + SOCKS)
