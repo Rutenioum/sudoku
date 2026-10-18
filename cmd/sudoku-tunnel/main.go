@@ -23,6 +23,8 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/app"
 	"github.com/SUDOKU-ASCII/sudoku/internal/cli"
@@ -175,5 +177,6 @@ func main() {
 	if err != nil {
 		logx.Fatalf("CLI", "Failed to build table: %v", err)
 	}
+	cfg.UsageFile = strings.TrimSuffix(paths[0], filepath.Ext(paths[0])) + ".usage.json"
 	app.RunServer(cfg, tables)
 }

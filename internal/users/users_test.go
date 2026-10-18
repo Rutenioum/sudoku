@@ -5,6 +5,9 @@ import (
 	"encoding/hex"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,5 +150,67 @@ func TestPendingBytesChargedOnBind(t *testing.T) {
 	w.Write(make([]byte, 200))
 	if got := u.used.Load(); got != 500 {
 		t.Fatalf("used=%d", got)
+	}
+}
+
+func TestUsagePersistsAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.usage.json")
+	cfgs := []config.UserConfig{
+		{Key: "0123456789abcdef", Data: 1e-5},
+		{Key: "aabbccddeeff"},
+	}
+	reg, _ := NewRegistry(cfgs)
+	stop, err := reg.TrackUsage(path)
+	if err != nil {
+		t.Fatalf("missing file must not fail: %v", err)
+	}
+	reg.Lookup("0123456789abcdef").addUsage(10_000)
+	reg.Lookup("aabbccddeeff0000").addUsage(42)
+	stop() // a clean shutdown saves even though the ticker never fired
+
+	// The restarted server restores this month and drops users removed from the config.
+	restarted, _ := NewRegistry(cfgs[:1])
+	stop, err = restarted.TrackUsage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := restarted.Lookup("0123456789abcdef"); u.used.Load() != 10_000 || !u.Exceeded() {
+		t.Fatalf("restored used=%d exceeded=%v", u.used.Load(), u.Exceeded())
+	}
+	stop()
+	if b, _ := os.ReadFile(path); strings.Contains(string(b), "aabbccddeeff") {
+		t.Fatalf("removed user still saved: %s", b)
+	}
+
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.TrackUsage(path); err == nil {
+		t.Fatal("corrupt file must fail instead of silently resetting quotas")
+	}
+}
+
+func TestUsageResetsMonthly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.usage.json")
+	old := `{"month":"2000-01","used":{"0123456789abcdef":10000}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := NewRegistry([]config.UserConfig{{Key: "0123456789abcdef", Data: 1e-5}})
+	stop, err := reg.TrackUsage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	u := reg.Lookup("0123456789abcdef")
+	if u.used.Load() != 0 {
+		t.Fatalf("usage from an earlier month restored: %d", u.used.Load())
+	}
+
+	// Rolling over while running clears quotas, including the kicked state.
+	u.addUsage(10_000)
+	reg.resetUsage()
+	if u.Exceeded() || u.kicked.Load() {
+		t.Fatalf("reset left used=%d kicked=%v", u.used.Load(), u.kicked.Load())
 	}
 }

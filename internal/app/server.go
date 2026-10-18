@@ -61,6 +61,11 @@ func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 	}
 	if userReg != nil {
 		logx.Infof("Server", "User whitelist enabled (%d users)", len(cfg.Users))
+		stopUsage, err := userReg.TrackUsage(cfg.UsageFile)
+		if err != nil {
+			logx.Fatalf("Server", "load user usage: %v (fix or delete the file to reset usage)", err)
+		}
+		defer stopUsage()
 	}
 
 	// Listen on TCP port.

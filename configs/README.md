@@ -209,7 +209,7 @@ Add `users` to the **server** config to switch to whitelist mode: a connection w
 | `key` | yes | Either a client private key (hex, 64 or 128 chars), or a prefix (8–16 hex chars) of the user hash `sha256(privateKey bytes)[:8]` the client sends in the handshake. The two are told apart by length. |
 | `alias` | no | Name shown in logs as `[User:alias]`. Defaults to the 16-char user hash (never the private key). |
 | `bandwidth` | no | `[a, b]` in Mbps, `0` = unlimited. `a` is server→client (the client's download), `b` is client→server (the client's upload). Applied to the decoded payload, i.e. what the client perceives, not the Sudoku wire rate. Shared by all connections of the user. |
-| `data` | no | Total quota in GB (1 GB = 10^9 bytes), `0` = unlimited. Counts wire bytes in both directions across all of the user's connections; once exhausted, existing connections are closed and new ones rejected. Usage is kept in memory and resets when the server restarts. |
+| `data` | no | Monthly quota in GB (1 GB = 10^9 bytes), `0` = unlimited. Counts wire bytes in both directions across all of the user's connections; once exhausted, existing connections are closed and new ones rejected until the next calendar month (server local time), when usage resets automatically. Usage survives restarts: it is saved to `<config name>.usage.json` next to the config file (e.g. `server.config.usage.json`) every minute and on shutdown, keyed by user hash. Delete an entry (or the file) to reset usage early. |
 | `blocked` | no | `true` rejects this user. |
 
 Without `users`, behaviour is unchanged (logs show the raw hash).

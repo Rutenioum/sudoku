@@ -45,4 +45,8 @@ type Config struct {
 	// Users is a server-side whitelist. When non-empty, only clients whose handshake
 	// user hash matches an entry are accepted.
 	Users []UserConfig `json:"users,omitempty"`
+
+	// UsageFile persists users' monthly data usage across restarts; empty keeps it in memory.
+	// The CLI sets it next to the config file, it is never read from JSON.
+	UsageFile string `json:"-"`
 }
