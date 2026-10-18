@@ -119,6 +119,13 @@ func describeGoldenRequests(t *testing.T, captures []*goldenCapture, addr string
 		if len(raw) == 0 {
 			continue
 		}
+		// A connection the client tore down mid-request (a cancelled attempt that sendSessionControl
+		// then retries elsewhere) can be cut off at any byte; Windows drops unread data on reset.
+		// That is no wire format, so only a request whose headers are complete must parse.
+		if !bytes.Contains(raw, []byte("\r\n\r\n")) {
+			t.Logf("ignoring a connection cut off before the end of its headers: %q", raw)
+			continue
+		}
 		req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(raw)))
 		if err != nil {
 			t.Fatalf("captured request is not valid HTTP: %v\n%q", err, raw)
