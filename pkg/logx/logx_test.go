@@ -23,6 +23,7 @@ import (
 	"os"
 	"regexp"
 	"testing"
+	"time"
 )
 
 var clockRe = regexp.MustCompile(`\d\d:\d\d:\d\d`)
@@ -116,5 +117,38 @@ func TestParseLeadingComponents(t *testing.T) {
 		if c, r := parseLeadingComponents(tt.in); c != tt.component || r != tt.rest {
 			t.Errorf("parseLeadingComponents(%q) = %q, %q; want %q, %q", tt.in, c, r, tt.component, tt.rest)
 		}
+	}
+}
+
+func TestSubscribeStripsColor(t *testing.T) {
+	withStyle(t, true, LevelInfo)
+	entries, cancel := Subscribe()
+	defer cancel()
+
+	captureStdout(t, func() {
+		Warnf("TCP", "a %s b", Yellow("rule"))
+		Infof("", "plain")
+		Promptf("Setup", "not a line: ")
+	})
+
+	want := []Entry{{Level: LevelWarn, Text: "[TCP] a rule b"}, {Level: LevelInfo, Text: "plain"}}
+	for _, w := range want {
+		got := <-entries
+		if got.Time.IsZero() {
+			t.Fatalf("entry %+v has no time", got)
+		}
+		if got.Time = (time.Time{}); got != w {
+			t.Fatalf("got %+v, want %+v", got, w)
+		}
+	}
+	select {
+	case got := <-entries:
+		t.Fatalf("unexpected entry %+v", got)
+	default:
+	}
+
+	cancel()
+	if subscribed.Load() {
+		t.Fatal("still subscribed after cancel")
 	}
 }

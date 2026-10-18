@@ -97,16 +97,21 @@ func emit(lvl Level, component, format string, args []any, newline bool) {
 	bp := bufPool.Get().(*[]byte)
 	buf := (*bp)[:0]
 
+	now := time.Now()
 	var clock [8]byte
-	buf = appendStyled(buf, "\x1b[2m", time.Now().AppendFormat(clock[:0], "15:04:05"))
+	buf = appendStyled(buf, "\x1b[2m", now.AppendFormat(clock[:0], "15:04:05"))
 	buf = append(buf, ' ')
 	buf = appendStyled(buf, levelColors[lvl], levelNames[lvl])
 	buf = append(buf, ' ')
 	buf = appendComponent(buf, component)
 	buf = bytes.TrimRightFunc(buf, unicode.IsSpace)
 	buf = append(buf, ' ')
+	msgStart := len(buf)
 	buf = fmt.Appendf(buf, format, args...)
 	if newline {
+		if subscribed.Load() {
+			publish(now, lvl, component, buf[msgStart:])
+		}
 		buf = append(buf, '\n')
 	}
 
