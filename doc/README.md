@@ -6,6 +6,8 @@ Docs map:
 - Beginner guide (EN): [doc/getting-started.en.md](./getting-started.en.md)
 - 零基础上手指南（中文）：[doc/getting-started.zh.md](./getting-started.zh.md)
 - 更新日志（中文）：[doc/CHANGELOG.zh.md](./CHANGELOG.zh.md)
+- External controller API (EN): [doc/api.en.md](./api.en.md)
+- 外部控制器 API（中文）：[doc/api.zh.md](./api.zh.md)
 
 ## Overview
 - **What it is**: TCP tunnel with HTTP masking, Sudoku ASCII/low-entropy obfuscation, and AEAD encryption; optional bandwidth-optimized downlink plus UoT (UDP-over-TCP).
