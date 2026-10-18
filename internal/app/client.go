@@ -25,9 +25,11 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
-	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
+	"github.com/SUDOKU-ASCII/sudoku/internal/controller"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/crypto"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
@@ -93,7 +95,7 @@ func RunClientPool(configs []*config.Config, tableSets [][]*sudoku.Table) {
 		logx.Fatalf("Init", "Failed to build DNS resolver: %v", err)
 	}
 
-	dialer, err := buildOutboundDialer(runtimes)
+	out, err := buildOutbounds(runtimes)
 	if err != nil {
 		logx.Fatalf("Init", "Failed to build outbound dialer: %v", err)
 	}
@@ -102,7 +104,17 @@ func RunClientPool(configs []*config.Config, tableSets [][]*sudoku.Table) {
 
 	startReverseClient(primary.Config, &primary.BaseDialer)
 
-	routeMgrs := buildRouteManagers(primary.Config)
+	cl := newClient(primary.Config, out, resolver)
+	if addr := primary.Config.ExternalController; addr != "" {
+		cl.tracker = controller.NewTracker()
+		stopAPI, err := controller.Start(controller.Options{
+			Addr: addr, Secret: primary.Config.Secret, Client: cl, Tracker: cl.tracker,
+		})
+		if err != nil {
+			logx.Fatalf("API", "External controller: %v", err)
+		}
+		defer stopAPI()
+	}
 
 	l, err := net.Listen("tcp", fmt.Sprintf(":%d", primary.Config.LocalPort))
 	if err != nil {
@@ -120,26 +132,40 @@ func RunClientPool(configs []*config.Config, tableSets [][]*sudoku.Table) {
 	logx.Infof("Client", "Client (Mixed) on :%d -> %s | Mode: %s | Rules: %d",
 		primary.Config.LocalPort, strings.Join(nodeLabels, ", "), primary.Config.ProxyMode, len(primary.Config.RuleURLs))
 
-	serveUntilShutdown("Client", l, func(c net.Conn) {
-		serveMixed(c, primary.Config, routeMgrs, dialer, resolver)
-	})
+	serveUntilShutdown("Client", l, cl.serveMixed)
 }
 
-func serveMixed(c net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
+// client is what the mixed listener's handlers share.
+type client struct {
+	cfg      *config.Config
+	resolver *dnsutil.Resolver
+	out      *outbounds
+	routing  atomic.Pointer[routing]
+	modeMu   sync.Mutex          // serializes mode switches
+	tracker  *controller.Tracker // nil unless the external controller is on
+}
+
+func newClient(cfg *config.Config, out *outbounds, resolver *dnsutil.Resolver) *client {
+	c := &client{cfg: cfg, resolver: resolver, out: out}
+	c.routing.Store(newRouting(cfg.ProxyMode, cfg.RuleURLs))
+	return c
+}
+
+func (c *client) serveMixed(conn net.Conn) {
 	buf := make([]byte, 1)
-	if _, err := io.ReadFull(c, buf); err != nil {
-		c.Close()
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		conn.Close()
 		return
 	}
 
-	pConn := &peekConn{Conn: c, peeked: buf}
+	pConn := &peekConn{Conn: conn, peeked: buf}
 
 	switch buf[0] {
 	case 0x05:
-		handleSocks5(pConn, cfg, routeMgrs, dialer, resolver)
+		c.handleSocks5(pConn)
 	case 0x04:
-		handleSocks4(pConn, cfg, routeMgrs, dialer, resolver)
+		c.handleSocks4(pConn)
 	default:
-		handleHTTP(pConn, cfg, routeMgrs, dialer, resolver)
+		c.handleHTTP(pConn)
 	}
 }

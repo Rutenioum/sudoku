@@ -103,3 +103,23 @@ func TestFinalizeProxyMode(t *testing.T) {
 		})
 	}
 }
+
+func TestFinalizeExternalController(t *testing.T) {
+	for addr, want := range map[string]string{
+		"":                 "",
+		" 127.0.0.1:9090 ": "127.0.0.1:9090",
+		":9090":            ":9090",
+		"[::1]:9090":       "[::1]:9090",
+	} {
+		c := &Config{Mode: "client", ExternalController: addr}
+		if err := c.finalizeExternalController(); err != nil || c.ExternalController != want {
+			t.Errorf("%q: got %q, %v", addr, c.ExternalController, err)
+		}
+	}
+	for _, addr := range []string{"9090", "127.0.0.1", "127.0.0.1:0", "127.0.0.1:65536", "host:http"} {
+		c := &Config{ExternalController: addr}
+		if err := c.finalizeExternalController(); err == nil {
+			t.Errorf("%q: accepted", addr)
+		}
+	}
+}

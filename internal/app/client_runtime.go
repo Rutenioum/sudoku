@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -86,35 +87,27 @@ func buildClientRuntimes(configs []*config.Config, tableSets [][]*sudoku.Table) 
 	return runtimes, nil
 }
 
-func buildOutboundDialer(runtimes []*clientRuntime) (tunnel.Dialer, error) {
+func buildOutbounds(runtimes []*clientRuntime) (*outbounds, error) {
 	if len(runtimes) == 0 {
 		return nil, fmt.Errorf("no client runtimes provided")
 	}
-	if len(runtimes) == 1 {
-		rt := runtimes[0]
-		if rt.Config.SessionMuxEnabled() {
-			logx.Infof("Init", "Enabled session mux (single tunnel, multi-target)")
-		}
-		return rt.Dialer, nil
-	}
-
-	nodes := make([]tunnel.BalancedNode, 0, len(runtimes))
+	names := make([]string, len(runtimes))
 	muxCount := 0
-	for _, rt := range runtimes {
+	for i, rt := range runtimes {
+		names[i] = cmp.Or(rt.Config.Name, rt.NodeID)
 		if rt.Config.SessionMuxEnabled() {
 			muxCount++
 		}
-		nodes = append(nodes, tunnel.BalancedNode{
-			ID:     rt.NodeID,
-			Dialer: rt.Dialer,
-		})
 	}
-
 	if muxCount > 0 {
 		logx.Infof("Init", "Enabled session mux on %d/%d outbound node(s)", muxCount, len(runtimes))
 	}
 
-	return tunnel.NewBalancedDialer(nodes)
+	nodes := make([]outboundNode, len(runtimes))
+	for i, name := range uniqueNodeNames(names) {
+		nodes[i] = outboundNode{name: name, dialer: runtimes[i].Dialer}
+	}
+	return newOutbounds(nodes)
 }
 
 func startMuxWarmers(runtimes []*clientRuntime) func() {

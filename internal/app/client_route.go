@@ -59,7 +59,8 @@ func (a routeAction) String() string {
 
 type routeDecision struct {
 	action routeAction
-	match  string
+	match  string        // what logs show, e.g. "DIRECT/DOMAIN-SUFFIX(example.cn)" or "MODE(global)"
+	rule   geodata.Match // the rule that matched; zero when the mode decided
 }
 
 type routeManagers struct {
@@ -68,11 +69,8 @@ type routeManagers struct {
 	reject *geodata.Manager
 }
 
-func buildRouteManagers(cfg *config.Config) *routeManagers {
-	if cfg == nil {
-		return nil
-	}
-	directURLs, proxyURLs, rejectURLs := config.RuntimeRuleURLs(cfg.ProxyMode, cfg.RuleURLs)
+func buildRouteManagers(mode string, ruleURLs []string) *routeManagers {
+	directURLs, proxyURLs, rejectURLs := config.RuntimeRuleURLs(mode, ruleURLs)
 	mgrs := &routeManagers{}
 	if len(directURLs) > 0 {
 		mgrs.direct = geodata.GetInstance(directURLs)
@@ -120,14 +118,25 @@ func (m *routeManagers) match(action routeAction, destAddr string, destIP net.IP
 	if !hit {
 		return routeDecision{}, false
 	}
-	return routeDecision{action: action, match: action.String() + "/" + rule.String()}, true
+	return routeDecision{action: action, match: action.String() + "/" + rule.String(), rule: rule}, true
 }
 
-func decideRoute(cfg *config.Config, mgrs *routeManagers, destAddr string, destIP net.IP) routeDecision {
-	if cfg == nil {
-		return routeDecision{action: routeActionProxy, match: "CFG(nil)"}
-	}
+// routing is the mode and the rules a client routes by. Switching mode swaps it whole, so no
+// decision mixes one mode with another mode's rules.
+type routing struct {
+	mode string // "pac", "global" or "direct"
+	mgrs *routeManagers
+}
 
+func newRouting(mode string, ruleURLs []string) *routing {
+	return &routing{mode: mode, mgrs: buildRouteManagers(mode, ruleURLs)}
+}
+
+func (r *routing) decide(destAddr string, destIP net.IP) routeDecision {
+	return decideRoute(r.mode, r.mgrs, destAddr, destIP)
+}
+
+func decideRoute(mode string, mgrs *routeManagers, destAddr string, destIP net.IP) routeDecision {
 	if d, ok := mgrs.match(routeActionReject, destAddr, destIP); ok {
 		return d
 	}
@@ -135,7 +144,7 @@ func decideRoute(cfg *config.Config, mgrs *routeManagers, destAddr string, destI
 		return d
 	}
 
-	switch cfg.ProxyMode {
+	switch mode {
 	case "direct":
 		return routeDecision{action: routeActionDirect, match: "MODE(direct)"}
 	case "global":

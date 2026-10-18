@@ -213,3 +213,33 @@ ssh -p 2222 127.0.0.1
 | `blocked` | 否 | `true` 则拒绝该用户。 |
 
 不配置 `users` 时行为不变(日志仍显示原始哈希)。
+
+## 外部控制器（Web 面板）
+
+设置 `external_controller` 即开启 Clash/mihomo 语义的 RESTful API，[zashboard](https://github.com/Zephyruso/zashboard)、metacubexd、yacd 等面板可直接接入。为空则关闭。全部接口的参数、返回值与 curl/websocket 调用示例见 [doc/api.zh.md](../doc/api.zh.md)。
+
+```json
+"external_controller": "127.0.0.1:9090",
+"secret": "change-me"
+```
+
+- `secret` 是面板使用的 Bearer token。只有监听回环地址时才建议留空；监听其它地址而不设 secret，任何能连到端口的人都能查看和操控节点（启动时会打警告）。
+- 面板里添加后端 `http://127.0.0.1:9090` 并填 secret。API 允许任意来源（CORS `*`），靠 secret 保护。
+
+**客户端**——路由、JSON 结构与状态码均与 mihomo 一致：
+- 节点与分组：`PROXY`（Selector，成员为 `Balance` 与各节点）、`Balance`（LoadBalance，两个及以上节点时才有）、`GLOBAL`（全局模式使用的 Selector，默认跟随 `PROXY`）、各节点（类型 `Sudoku`）、`DIRECT`、`REJECT`。切换只影响新连接，重启后恢复默认。
+- 模式：`rule`（即 sudoku 的 PAC）、`global`、`direct`，经 `PATCH /configs` 实时切换，影响新连接。没有配置 `rule_urls` 时切到 `rule` 会加载默认 PAC 规则。
+- 规则：每类规则源是一个规则提供者，名为 `reject`、`proxy`、`direct`，按匹配顺序列出，最后是 `Match`；`PUT /providers/rules/{name}` 重新下载。
+- 延迟测试（`/proxies/{name}/delay`、`/group/{name}/delay`）与真实流量走同一条拨号路径。
+- `/connections` 列出所有 TCP 连接，以及 SOCKS5 UDP 关联里的每个目的地址（关闭其中一条会结束整个 UDP 关联）；`/traffic`、`/memory`、`/logs` 的推流方式与 mihomo 相同。
+- 开启后每条连接约多占 0.6 KB 用于统计，转发仍走原有的拷贝路径；关闭时没有任何额外开销。
+
+**服务端**——只读的 `/users`（另有 `/traffic`、`/memory`、`/logs`、`/version`）：
+
+```json
+{ "count": 2, "active": 1, "up": 1000, "down": 3000, "users": [
+  { "name": "alice", "blocked": false, "exceeded": false, "conns": 1,
+    "up": 1000, "down": 3000, "upTotal": 3000, "downTotal": 10000, "used": 13000, "limit": 100000000000 } ] }
+```
+
+`up`/`down` 为来自/发往该用户的每秒字节数，`upTotal`/`downTotal` 为启动以来累计，`used`/`limit` 为本月计入配额的字节数（`limit` 为 0 表示不限）。以 websocket 连接时每秒推送一次。服务端的 `/traffic` 为所有用户之和。

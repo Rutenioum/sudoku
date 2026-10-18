@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
+	"github.com/SUDOKU-ASCII/sudoku/internal/controller"
 	"github.com/SUDOKU-ASCII/sudoku/internal/protocol"
 	"github.com/SUDOKU-ASCII/sudoku/internal/reverse"
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
@@ -66,6 +67,15 @@ func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 			logx.Fatalf("Server", "load user usage: %v (fix or delete the file to reset usage)", err)
 		}
 		defer stopUsage()
+	}
+	if cfg.ExternalController != "" {
+		stopAPI, err := controller.Start(controller.Options{
+			Addr: cfg.ExternalController, Secret: cfg.Secret, Users: userReg.Stats,
+		})
+		if err != nil {
+			logx.Fatalf("API", "External controller: %v", err)
+		}
+		defer stopAPI()
 	}
 
 	// Listen on TCP port.

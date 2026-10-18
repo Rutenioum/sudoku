@@ -25,8 +25,6 @@ import (
 	"net"
 	"net/http"
 	"testing"
-
-	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 )
 
 const connectHead = "CONNECT www.example.com:443 HTTP/1.1\r\nHost: www.example.com:443\r\nProxy-Connection: Keep-Alive\r\n\r\n"
@@ -77,7 +75,7 @@ func TestHandleHTTPConnectForwardsBytesSentBeforeReply(t *testing.T) {
 		return target, nil
 	}}
 
-	handleHTTP(conn, &config.Config{ProxyMode: "global"}, &routeManagers{}, dialer, nil)
+	newTestClient(t, "global", &routeManagers{}, dialer).handleHTTP(conn)
 
 	if got := target.WriteBuf.String(); got != "early payload" {
 		t.Fatalf("target received %q, want the bytes sent right after the head", got)

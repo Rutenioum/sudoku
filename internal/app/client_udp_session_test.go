@@ -151,7 +151,7 @@ func newUDPSessionHarness(t testing.TB, cfg *config.Config, mgrs *routeManagers,
 		sink:   newUDPSocket(t, keep),
 		client: newUDPSocket(t, keep),
 	}
-	h.sess = newUoTClientSession(NewMockConn(nil), relay, h.uot, "udp4", cfg, mgrs, nil)
+	h.sess = newUoTClientSession(NewMockConn(nil), relay, h.uot, "udp4", newTestClient(t, cfg.ProxyMode, mgrs, nil), []string{"node", groupProxy})
 	t.Cleanup(h.sess.close)
 	return h
 }

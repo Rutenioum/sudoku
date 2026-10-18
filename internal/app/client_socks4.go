@@ -30,10 +30,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/SUDOKU-ASCII/sudoku/internal/config"
-	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
-	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
 )
 
 // socks4ReadBufBytes bounds the NUL-terminated user id and domain the handshake will buffer.
@@ -43,7 +40,7 @@ var socks4Readers = sync.Pool{New: func() any { return bufio.NewReaderSize(nil, 
 
 var errNotSocks4Connect = errors.New("not a SOCKS4 CONNECT request")
 
-func handleSocks4(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
+func (c *client) handleSocks4(conn net.Conn) {
 	defer conn.Close()
 
 	br := socks4Readers.Get().(*bufio.Reader)
@@ -64,7 +61,7 @@ func handleSocks4(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, d
 		conn = &peekConn{Conn: conn, peeked: early}
 	}
 
-	targetConn, _, success := dialTarget("TCP", conn.RemoteAddr(), destAddrStr, destIP, cfg, routeMgrs, dialer, resolver)
+	targetConn, _, success := c.dialTarget("Socks4", conn, destAddrStr, destIP)
 	if !success {
 		_, _ = conn.Write([]byte{0x00, 0x5B, 0, 0, 0, 0, 0, 0})
 		return

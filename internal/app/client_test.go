@@ -31,11 +31,20 @@ import (
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
+	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/geodata"
 )
 
 func newRuleManagerForTest(t testing.TB, payload string) *geodata.Manager {
+	t.Helper()
+	mgr := geodata.NewManager([]string{ruleServerForTest(t, payload)})
+	mgr.Update()
+	return mgr
+}
+
+// ruleServerForTest serves payload as a rule list, cached in a throwaway directory.
+func ruleServerForTest(t testing.TB, payload string) string {
 	t.Helper()
 	t.Setenv("SUDOKU_RULE_CACHE_DIR", t.TempDir())
 
@@ -44,10 +53,7 @@ func newRuleManagerForTest(t testing.TB, payload string) *geodata.Manager {
 		_, _ = w.Write([]byte(payload))
 	}))
 	t.Cleanup(srv.Close)
-
-	mgr := geodata.NewManager([]string{srv.URL})
-	mgr.Update()
-	return mgr
+	return srv.URL
 }
 
 // MockConn implements net.Conn for testing
@@ -93,6 +99,18 @@ func (m *MockDialer) Dial(destAddrStr string) (net.Conn, error) {
 		return m.DialFunc(destAddrStr)
 	}
 	return NewMockConn(nil), nil
+}
+
+// newTestClient routes by mode and mgrs and proxies everything through dialer.
+func newTestClient(t testing.TB, mode string, mgrs *routeManagers, dialer tunnel.Dialer) *client {
+	t.Helper()
+	out, err := newOutbounds([]outboundNode{{name: "node", dialer: dialer}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &client{cfg: &config.Config{ProxyMode: mode}, out: out}
+	c.routing.Store(&routing{mode: mode, mgrs: mgrs})
+	return c
 }
 
 // dialRecorder lists every outbound action dialTarget took.
@@ -171,7 +189,7 @@ func TestDialTarget(t *testing.T) {
 				return NewMockConn(nil), nil
 			}}
 
-			conn, decision, ok := dialTarget("TCP", nil, tt.target, nil, &config.Config{ProxyMode: tt.mode}, mgrs, dialer, nil)
+			conn, decision, ok := newTestClient(t, tt.mode, mgrs, dialer).dialTarget("TCP", nil, tt.target, nil)
 
 			if ok != tt.wantDialed || (conn != nil) != tt.wantDialed {
 				t.Fatalf("ok = %v, conn = %v, want dialed = %v", ok, conn, tt.wantDialed)
@@ -198,12 +216,12 @@ func TestServeMixed_HTTPRejectReturnsForbidden(t *testing.T) {
 	conn := NewMockConn([]byte(reqStr))
 	cfg := &config.Config{ProxyMode: "global"}
 
-	serveMixed(conn, cfg, &routeManagers{reject: rejectMgr}, &MockDialer{
+	newTestClient(t, cfg.ProxyMode, &routeManagers{reject: rejectMgr}, &MockDialer{
 		DialFunc: func(destAddrStr string) (net.Conn, error) {
 			t.Fatalf("unexpected proxy dial: %s", destAddrStr)
 			return nil, nil
 		},
-	}, nil)
+	}).serveMixed(conn)
 
 	if got := conn.WriteBuf.String(); got != "HTTP/1.1 403 Forbidden\r\n\r\n" {
 		t.Fatalf("unexpected HTTP reject response: %q", got)
@@ -222,12 +240,12 @@ func TestServeMixed_SOCKS5RejectReturnsRulesetDeny(t *testing.T) {
 	conn := NewMockConn(input)
 	cfg := &config.Config{ProxyMode: "global"}
 
-	serveMixed(conn, cfg, &routeManagers{reject: rejectMgr}, &MockDialer{
+	newTestClient(t, cfg.ProxyMode, &routeManagers{reject: rejectMgr}, &MockDialer{
 		DialFunc: func(destAddrStr string) (net.Conn, error) {
 			t.Fatalf("unexpected proxy dial: %s", destAddrStr)
 			return nil, nil
 		},
-	}, nil)
+	}).serveMixed(conn)
 
 	resp := conn.WriteBuf.Bytes()
 	if len(resp) < 12 {
@@ -264,7 +282,7 @@ func TestServeMixed_SOCKS4(t *testing.T) {
 		},
 	}
 
-	serveMixed(conn, cfg, nil, dialer, nil)
+	newTestClient(t, cfg.ProxyMode, nil, dialer).serveMixed(conn)
 
 	// Verify Target
 	expectedTarget := "1.2.3.4:80"
@@ -298,7 +316,7 @@ func TestServeMixed_SOCKS5(t *testing.T) {
 		},
 	}
 
-	serveMixed(conn, cfg, nil, dialer, nil)
+	newTestClient(t, cfg.ProxyMode, nil, dialer).serveMixed(conn)
 
 	expectedTarget := "1.2.3.4:80"
 	if target != expectedTarget {
@@ -319,7 +337,7 @@ func TestServeMixed_HTTP(t *testing.T) {
 		},
 	}
 
-	serveMixed(conn, cfg, nil, dialer, nil)
+	newTestClient(t, cfg.ProxyMode, nil, dialer).serveMixed(conn)
 
 	expectedTarget := "example.com:443"
 	if target != expectedTarget {
@@ -340,7 +358,7 @@ func TestServeMixed_HTTPIPv6HostNoPort(t *testing.T) {
 		},
 	}
 
-	serveMixed(conn, cfg, nil, dialer, nil)
+	newTestClient(t, cfg.ProxyMode, nil, dialer).serveMixed(conn)
 
 	expectedTarget := "[2001:db8::1]:443"
 	if target != expectedTarget {

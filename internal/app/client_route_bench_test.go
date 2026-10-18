@@ -22,8 +22,6 @@ package app
 import (
 	"net"
 	"testing"
-
-	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 )
 
 func newBenchRouteManagers(b testing.TB) *routeManagers {
@@ -37,7 +35,7 @@ func newBenchRouteManagers(b testing.TB) *routeManagers {
 
 func BenchmarkDecideRoute(b *testing.B) {
 	mgrs := newBenchRouteManagers(b)
-	cfg := &config.Config{ProxyMode: "pac"}
+	const mode = "pac"
 
 	cases := []struct {
 		name string
@@ -55,7 +53,7 @@ func BenchmarkDecideRoute(b *testing.B) {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				_ = decideRoute(cfg, mgrs, tc.addr, tc.ip)
+				_ = decideRoute(mode, mgrs, tc.addr, tc.ip)
 			}
 		})
 	}

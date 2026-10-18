@@ -28,9 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
-	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
 )
 
 const (
@@ -51,9 +49,8 @@ type uotClientSession struct {
 	uotConn   net.Conn
 	uotWriter *tunnel.UoTWriter
 	udpNet    string
-	cfg       *config.Config
-	routeMgrs *routeManagers
-	resolver  *dnsutil.Resolver
+	client    *client
+	flows     *udpFlows // nil unless the external controller is on
 
 	closeOnce sync.Once
 
@@ -68,20 +65,23 @@ type uotClientSession struct {
 	reply         []byte // scratch for replies built by pipeClientToServer's goroutine
 }
 
-func newUoTClientSession(ctrl net.Conn, udpConn *net.UDPConn, uotConn net.Conn, udpNet string, cfg *config.Config, routeMgrs *routeManagers, resolver *dnsutil.Resolver) *uotClientSession {
+// newUoTClientSession relays one UDP association; proxied datagrams go through uotConn, which
+// was dialed through proxyChain.
+func newUoTClientSession(ctrl net.Conn, udpConn *net.UDPConn, uotConn net.Conn, udpNet string, c *client, proxyChain []string) *uotClientSession {
 	sess := &uotClientSession{
 		ctrlConn:      ctrl,
 		udpConn:       udpConn,
 		uotConn:       uotConn,
 		udpNet:        udpNet,
-		cfg:           cfg,
-		routeMgrs:     routeMgrs,
-		resolver:      resolver,
+		client:        c,
 		allowedClient: addrFromIP(initialUDPAssociateClientIP(ipFromNetAddr(ctrl.RemoteAddr()))),
 		peers:         newTTLSet[netip.AddrPort](256),
 		logOnce:       newTTLSet[routeLogKey](1024),
 	}
 	sess.uotWriter = tunnel.NewUoTWriter(uotConn, func(error) { sess.close() })
+	if c.tracker != nil {
+		sess.flows = newUDPFlows(c.tracker, ctrl, proxyChain, closerFunc(sess.close))
+	}
 	return sess
 }
 
@@ -98,6 +98,7 @@ func (s *uotClientSession) run() {
 func (s *uotClientSession) close() {
 	s.closeOnce.Do(func() {
 		s.uotWriter.Close()
+		s.flows.close()
 		_ = s.udpConn.Close()
 		_ = s.uotConn.Close()
 		_ = s.ctrlConn.Close()
@@ -145,6 +146,7 @@ func (s *uotClientSession) relayPeerResponse(from netip.AddrPort, pkt []byte) er
 	}
 	s.reply = append(appendSocks5UDPHeader(s.reply[:0], from), pkt...)
 	_, err := s.udpConn.WriteToUDPAddrPort(s.reply, *clientAddr)
+	s.flows.receivedDirect(from, len(pkt))
 	return err
 }
 
@@ -158,14 +160,16 @@ func (s *uotClientSession) relayClientDatagram(from netip.AddrPort, pkt []byte) 
 	}
 	s.setClientAddr(from)
 
-	decision := decideRoute(s.cfg, s.routeMgrs, req.destAddr, req.destIP)
+	decision := s.client.routing.Load().decide(req.destAddr, req.destIP)
 	if decision.action == routeActionReject {
 		s.logRouteOnce(from, req.destAddr, decision)
 		return nil
 	}
 
+	var direct netip.AddrPort
 	if !decision.shouldProxy() {
-		direct, err := s.directAddr(req)
+		var err error
+		direct, err = s.directAddr(req)
 		switch {
 		case err != nil:
 			decision.action = routeActionProxy
@@ -178,6 +182,7 @@ func (s *uotClientSession) relayClientDatagram(from netip.AddrPort, pkt []byte) 
 			if _, err := s.udpConn.WriteToUDPAddrPort(req.payload, direct); err != nil {
 				return err
 			}
+			s.flows.sent(req.destAddr, decision, direct, len(req.payload))
 		}
 	}
 
@@ -191,6 +196,7 @@ func (s *uotClientSession) relayClientDatagram(from netip.AddrPort, pkt []byte) 
 		if err != nil {
 			return err
 		}
+		s.flows.sent(req.destAddr, decision, netip.AddrPort{}, len(req.payload))
 	}
 
 	s.logRouteOnce(from, req.destAddr, decision)
@@ -204,7 +210,7 @@ func (s *uotClientSession) directAddr(req udpRequest) (netip.AddrPort, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), udpResolveTimeout)
 	defer cancel()
-	addr, err := resolveUDPAddr(ctx, req.destAddr, s.resolver)
+	addr, err := resolveUDPAddr(ctx, req.destAddr, s.client.resolver)
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
@@ -231,6 +237,7 @@ func (s *uotClientSession) pipeServerToClient() {
 		if clientAddr == nil {
 			continue
 		}
+		s.flows.receivedProxy(addr, len(payload))
 		var ok bool
 		if reply, ok = appendUDPResponse(reply[:0], addr, payload); ok {
 			if _, err := s.udpConn.WriteToUDPAddrPort(reply, *clientAddr); err != nil {

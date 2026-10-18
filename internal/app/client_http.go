@@ -28,13 +28,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/SUDOKU-ASCII/sudoku/internal/config"
-	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
-	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
 )
 
-func handleHTTP(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
+func (c *client) handleHTTP(conn net.Conn) {
 	defer conn.Close()
 
 	req, early, err := readProxyRequest(conn)
@@ -47,8 +44,12 @@ func handleHTTP(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, dia
 
 	host := ensureHostPort(req.Host, req.Method)
 	destIP := net.ParseIP(hostOnly(host))
+	inbound := "HTTP"
+	if req.Method == http.MethodConnect {
+		inbound = "HTTPS"
+	}
 
-	targetConn, decision, success := dialTarget("TCP", conn.RemoteAddr(), host, destIP, cfg, routeMgrs, dialer, resolver)
+	targetConn, decision, success := c.dialTarget(inbound, conn, host, destIP)
 	if !success {
 		if decision.action == routeActionReject {
 			_, _ = conn.Write([]byte("HTTP/1.1 403 Forbidden\r\n\r\n"))
@@ -75,7 +76,7 @@ func handleHTTP(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, dia
 
 		retryable := req.Body == nil || req.Body == http.NoBody
 		if retryable && req.ContentLength <= 0 {
-			if targetConn2, _, ok := dialTarget("TCP", conn.RemoteAddr(), host, destIP, cfg, routeMgrs, dialer, resolver); ok {
+			if targetConn2, _, ok := c.dialTarget(inbound, conn, host, destIP); ok {
 				if err2 := req.Write(targetConn2); err2 == nil {
 					connutil.PipeConn(conn, targetConn2)
 					return

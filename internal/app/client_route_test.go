@@ -22,8 +22,6 @@ package app
 import (
 	"net"
 	"testing"
-
-	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 )
 
 func TestDecideRoute(t *testing.T) {
@@ -56,14 +54,10 @@ func TestDecideRoute(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := decideRoute(&config.Config{ProxyMode: tc.mode}, tc.mgrs, tc.addr, tc.ip)
+			got := decideRoute(tc.mode, tc.mgrs, tc.addr, tc.ip)
 			if got.action != tc.wantAction || got.match != tc.wantMatch {
 				t.Fatalf("decideRoute() = %s %q, want %s %q", got.action, got.match, tc.wantAction, tc.wantMatch)
 			}
 		})
-	}
-
-	if got := decideRoute(nil, all, "track.ads.example:443", nil); got.action != routeActionProxy || got.match != "CFG(nil)" {
-		t.Fatalf("nil config decision = %s %q", got.action, got.match)
 	}
 }

@@ -26,8 +26,6 @@ import (
 	"net"
 	"strings"
 	"testing"
-
-	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 )
 
 func socks4Request(ip []byte, userID, domain string) []byte {
@@ -93,7 +91,7 @@ func TestHandleSocks4ForwardsBytesSentBeforeReply(t *testing.T) {
 		return target, nil
 	}}
 
-	handleSocks4(conn, &config.Config{ProxyMode: "global"}, &routeManagers{}, dialer, nil)
+	newTestClient(t, "global", &routeManagers{}, dialer).handleSocks4(conn)
 
 	if got := target.WriteBuf.String(); got != "early payload" {
 		t.Fatalf("target received %q, want the bytes sent right after the request", got)

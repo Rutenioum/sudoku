@@ -24,11 +24,8 @@ import (
 	"io"
 	"net"
 
-	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 	"github.com/SUDOKU-ASCII/sudoku/internal/protocol"
-	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
-	"github.com/SUDOKU-ASCII/sudoku/pkg/dnsutil"
 	"github.com/SUDOKU-ASCII/sudoku/pkg/logx"
 )
 
@@ -37,7 +34,7 @@ func writeSocks5Reply(w io.Writer, rep byte) {
 	_, _ = w.Write([]byte{0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 }
 
-func handleSocks5(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
+func (c *client) handleSocks5(conn net.Conn) {
 	defer conn.Close()
 
 	buf := make([]byte, 262)
@@ -58,7 +55,7 @@ func handleSocks5(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, d
 	switch header[1] {
 	case 0x01: // CONNECT
 	case 0x03: // UDP ASSOCIATE
-		handleSocks5UDPAssociate(conn, cfg, routeMgrs, dialer, resolver)
+		c.handleSocks5UDPAssociate(conn)
 		return
 	default:
 		writeSocks5Reply(conn, 0x07) // Command not supported
@@ -70,7 +67,7 @@ func handleSocks5(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, d
 		return
 	}
 
-	targetConn, decision, success := dialTarget("TCP", conn.RemoteAddr(), destAddrStr, destIP, cfg, routeMgrs, dialer, resolver)
+	targetConn, decision, success := c.dialTarget("Socks5", conn, destAddrStr, destIP)
 	if !success {
 		if decision.action == routeActionReject {
 			writeSocks5Reply(conn, 0x02) // Connection not allowed by ruleset
@@ -84,13 +81,7 @@ func handleSocks5(conn net.Conn, cfg *config.Config, routeMgrs *routeManagers, d
 	connutil.PipeConn(conn, targetConn)
 }
 
-func handleSocks5UDPAssociate(ctrl net.Conn, cfg *config.Config, routeMgrs *routeManagers, dialer tunnel.Dialer, resolver *dnsutil.Resolver) {
-	uotDialer, ok := dialer.(tunnel.UoTDialer)
-	if !ok {
-		writeSocks5Reply(ctrl, 0x07)
-		return
-	}
-
+func (c *client) handleSocks5UDPAssociate(ctrl net.Conn) {
 	localIP := ipFromNetAddr(ctrl.LocalAddr())
 	remoteIP := ipFromNetAddr(ctrl.RemoteAddr())
 	advertiseIP := selectUDPAssociateAdvertiseIP(localIP, remoteIP)
@@ -101,8 +92,9 @@ func handleSocks5UDPAssociate(ctrl net.Conn, cfg *config.Config, routeMgrs *rout
 		return
 	}
 
-	uotConn, err := uotDialer.DialUDPOverTCP()
+	uotConn, chain, err := c.out.dialUoT(c.routing.Load().mode == "global")
 	if err != nil {
+		logx.Warnf("SOCKS5/UDP", "Dial Failed: %v", err)
 		_ = udpConn.Close()
 		writeSocks5Reply(ctrl, 0x01)
 		return
@@ -115,8 +107,8 @@ func handleSocks5UDPAssociate(ctrl net.Conn, cfg *config.Config, routeMgrs *rout
 		return
 	}
 
-	logx.Infof("SOCKS5/UDP", "Associate ready on %s -> %s", udpConn.LocalAddr().String(), cfg.ServerAddress)
-	newUoTClientSession(ctrl, udpConn, uotConn, udpNet, cfg, routeMgrs, resolver).run()
+	logx.Infof("SOCKS5/UDP", "Associate ready on %s -> %s", udpConn.LocalAddr().String(), chain[0])
+	newUoTClientSession(ctrl, udpConn, uotConn, udpNet, c, chain).run()
 }
 
 func buildUDPAssociateReply(host net.IP, port int, localIP net.IP, remoteIP net.IP) []byte {

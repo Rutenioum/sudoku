@@ -21,6 +21,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 )
 
@@ -43,7 +45,22 @@ func (c *Config) Finalize() error {
 	}
 
 	c.finalizeProxyMode()
+	if err := c.finalizeExternalController(); err != nil {
+		return err
+	}
 	return c.finalizeUsers()
+}
+
+func (c *Config) finalizeExternalController() error {
+	c.ExternalController = strings.TrimSpace(c.ExternalController)
+	if c.ExternalController == "" {
+		return nil
+	}
+	_, port, err := net.SplitHostPort(c.ExternalController)
+	if n, perr := strconv.Atoi(port); err != nil || perr != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("external_controller %q: want host:port, e.g. 127.0.0.1:9090", c.ExternalController)
+	}
+	return nil
 }
 
 func (c *Config) normalizeFields() {

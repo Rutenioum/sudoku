@@ -213,3 +213,33 @@ Add `users` to the **server** config to switch to whitelist mode: a connection w
 | `blocked` | no | `true` rejects this user. |
 
 Without `users`, behaviour is unchanged (logs show the raw hash).
+
+## External controller (web panels)
+
+Set `external_controller` to serve the Clash/mihomo RESTful API, so panels such as [zashboard](https://github.com/Zephyruso/zashboard), metacubexd and yacd can watch and steer sudoku. Off when empty. Every endpoint, with parameters, responses and curl/websocket examples, is documented in [doc/api.en.md](../doc/api.en.md).
+
+```json
+"external_controller": "127.0.0.1:9090",
+"secret": "change-me"
+```
+
+- `secret` is the panel's bearer token. Leave it empty only on a loopback address; on any other address an empty secret lets anyone who can reach the port watch and steer the node (sudoku logs a warning).
+- In the panel, add backend `http://127.0.0.1:9090` with the secret. Any origin may call the API (CORS `*`); the secret is what guards it.
+
+**Client** — routes, shapes and status codes follow mihomo:
+- Proxies: `PROXY` (Selector over `Balance` and every node), `Balance` (LoadBalance, only with two or more nodes), `GLOBAL` (Selector used in global mode, `PROXY` by default), each node (type `Sudoku`), `DIRECT`, `REJECT`. Picks take effect for new connections and are not kept across restarts.
+- Modes: `rule` (sudoku's PAC), `global`, `direct`; switching via `PATCH /configs` applies to new connections. Switching to `rule` without `rule_urls` loads the default PAC rules.
+- Rules: each rule source is a rule provider named `reject`, `proxy` or `direct`, listed in match order followed by the final `Match`; `PUT /providers/rules/{name}` re-downloads it.
+- Latency tests (`/proxies/{name}/delay`, `/group/{name}/delay`) dial through the node exactly like traffic does.
+- `/connections` lists every TCP connection and every UDP destination of a SOCKS5 UDP association (closing one of those closes the association); `/traffic`, `/memory`, `/logs` stream as in mihomo.
+- While the controller is on, each connection carries about 0.6 KB of tracking state; relays keep their usual copy paths. Off, it costs nothing.
+
+**Server** — `/users` (plus `/traffic`, `/memory`, `/logs`, `/version`), read-only:
+
+```json
+{ "count": 2, "active": 1, "up": 1000, "down": 3000, "users": [
+  { "name": "alice", "blocked": false, "exceeded": false, "conns": 1,
+    "up": 1000, "down": 3000, "upTotal": 3000, "downTotal": 10000, "used": 13000, "limit": 100000000000 } ] }
+```
+
+`up`/`down` are bytes per second from/to the user, `upTotal`/`downTotal` count since start, `used`/`limit` are this month's quota bytes (`limit` 0 = unlimited). Over a websocket it pushes once per second. The server's `/traffic` is the sum of its users.
