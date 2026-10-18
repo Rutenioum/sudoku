@@ -43,6 +43,7 @@
 - `mux`: `Write` 返回时帧可能尚在合并队列中，尚未写到线上。
 - `dns`: 移除内置 DoT 支持，默认仍为 DoH。
 - `httpmask`: 每个 session 保证只有一个 pull 租约，并移除 `downlinkMu`。
+- `build`: Go 升级到 1.27.2（`go.mod` 与 Dockerfile）；依赖升级到最新兼容版本：huh v1.0.0、coder/websocket v1.8.15、x/crypto v0.58.0、x/net v0.61.0、x/sys v0.49.0、x/term v0.47.0 等。编解码与 table 生成不变，v0.5.1 golden 向量与互通测试通过。
 
 ### 测试
 - `tests`: 新增 `users` 白名单在 no-httpmask、legacy、stream、poll、ws 下的端到端测试，以及 UoT 与 TCP 吞吐对比基准（`SUDOKU_UOT_BENCH=1`）。
