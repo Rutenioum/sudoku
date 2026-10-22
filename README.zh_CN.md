@@ -7,7 +7,7 @@
 
 # Sudoku (ASCII)
 
-> Sudoku 协议目前已被 [Mihomo](https://github.com/MetaCubeX/mihomo) 内核支持！
+> sudoku协议已完成最后大规模的更新和优化，如社区无确实需要变动的feat/perf的需求，sudoku将进入缓慢更新的后维护期
 
 [![构建状态](https://img.shields.io/github/actions/workflow/status/SUDOKU-ASCII/sudoku/.github/workflows/release.yml?branch=main&style=for-the-badge)](https://github.com/SUDOKU-ASCII/sudoku/actions)
 [![最新版本](https://img.shields.io/github/v/release/SUDOKU-ASCII/sudoku?style=for-the-badge)](https://github.com/SUDOKU-ASCII/sudoku/releases)
@@ -17,13 +17,10 @@
 
 将原始数据字节映射为数独题目后发给另一端，对方解出题目即可得到原始数据，由于映射的多样性，使得用户可以自由决定流的外观。
 
+## 一键安装脚本（服务端）
+- https://github.com/SUDOKU-ASCII/easy-install
 
 ## 客户端支持
-
-版本要求：
-- 基于 Mihomo 内核的客户端：**Mihomo > v1.19.21**
-- 官方安卓客户端 Sudodroid：**Sudodroid >= v0.2.4**
-- 官方桌面客户端 sudoku4x4: **sudoku4x4 >= v0.0.9**
 
 ### Android
 - **CMFA**：https://github.com/MetaCubeX/ClashMetaForAndroid
@@ -36,13 +33,6 @@
 
 ### 桌面端（Windows/macOS/Linux）
 - **Sudoku Desktop（官方 Sudoku 桌面客户端）**：https://github.com/SUDOKU-ASCII/sudoku-desktop
-
-### 软路由（OpenWrt）
-- **OpenClash**：https://github.com/vernesong/OpenClash
-
-### 一键安装脚本（服务端/工具）
-- https://github.com/SUDOKU-ASCII/easy-install
-
 
 ## 核心特性
 

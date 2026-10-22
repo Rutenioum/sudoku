@@ -3,13 +3,13 @@
   <img src="./assets/logo-brutal.svg" width="100%">
     A Sudoku-based proxy protocol that abandons randomness and ushers in the era of plaintext / low-entropy / user-defined-fingerprint proxies
     <br>
-    theoretically solved the problem of traffic upstream and downstream parity.
+    theoretically solved the problem of traffic upstream and downstream parity
 </p>
 
 # Sudoku (ASCII)
 
 
-> Sudoku protocol is now supported by [Mihomo](https://github.com/MetaCubeX/mihomo) kernel!
+> Sudoku protocol has finished its last major update and optimization. Barring any pressing feat/perf needs from the community, Sudoku will transition into a slow-paced maintenance mode
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/SUDOKU-ASCII/sudoku/.github/workflows/release.yml?branch=main&style=for-the-badge)](https://github.com/SUDOKU-ASCII/sudoku/actions)
 [![Latest Release](https://img.shields.io/github/v/release/SUDOKU-ASCII/sudoku?style=for-the-badge)](https://github.com/SUDOKU-ASCII/sudoku/releases)
@@ -22,12 +22,10 @@
 
 After the original data bytes are mapped into Sudoku puzzles and sent to the other side, the peer can recover the original bytes by solving them. Because the mapping is diverse, users can freely decide what the traffic should look like.
 
-## Supported Clients
+### Install Script (server)
+- https://github.com/SUDOKU-ASCII/easy-install
 
-Version requirements:
-- Mihomo-based clients: **Mihomo > v1.19.21** 
-- Official Android client Sudodroid: **Sudodroid >= v0.2.4**
-- Official Desktop client sudoku4x4: **sudoku4x4 >= v0.0.9**
+## Supported Clients
 
 ### Android
 - **CMFA**: https://github.com/MetaCubeX/ClashMetaForAndroid
@@ -40,12 +38,6 @@ Version requirements:
 
 ### Desktop (Windows/macOS/Linux)
 - **Sudoku Desktop (official Sudoku desktop client)**: https://github.com/SUDOKU-ASCII/sudoku-desktop
-
-### Routers (OpenWrt)
-- **OpenClash**: https://github.com/vernesong/OpenClash
-
-### Install Script (server/tools)
-- https://github.com/SUDOKU-ASCII/easy-install
 
 ## Core Features
 
