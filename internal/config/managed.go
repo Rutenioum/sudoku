@@ -21,8 +21,11 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/SUDOKU-ASCII/sudoku/internal/managed"
 )
 
 // Managed mode defaults. The node hands the core a hook timeout in the same
@@ -96,11 +99,35 @@ func (c *Config) finalizeManaged() error {
 	if len(c.Users) > 0 {
 		return fmt.Errorf("managed mode is incompatible with users")
 	}
+	// The node injects the realm public key because it is per-realm data that a
+	// shared template cannot carry. It is the same value a client derives from
+	// its split key, which is why it is the Sudoku table key here.
+	if value := strings.ToLower(strings.TrimSpace(os.Getenv(managed.PublicKeyEnv))); value != "" {
+		c.Key = value
+	}
+	if err := validateManagedPublicKey(c.Key); err != nil {
+		return err
+	}
 	// Managed mode never falls back to a decoy site: a handshake that fails
 	// before admission would otherwise be relayed to the fallback address with
 	// no identity, which the node can neither bill nor revoke. Tarpitting is the
 	// only allowed outcome, so this is forced rather than validated.
 	c.SuspiciousAction = "silent"
+	return nil
+}
+
+// validateManagedPublicKey mirrors the node-side adapter: the core only ever
+// holds the realm public key, never a private key.
+func validateManagedPublicKey(value string) error {
+	if len(value) != 64 {
+		return fmt.Errorf("managed mode requires a 32-byte hex realm public key in key or %s", managed.PublicKeyEnv)
+	}
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if !(character >= '0' && character <= '9' || character >= 'a' && character <= 'f') {
+			return fmt.Errorf("managed realm public key must be lower-case hex")
+		}
+	}
 	return nil
 }
 

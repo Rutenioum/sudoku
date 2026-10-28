@@ -41,6 +41,10 @@ const (
 	ControlSocketEnv   = "SUDOKU_CONTROL_SOCKET"
 	RealmIDEnv         = "SUDOKU_REALM_ID"
 	HookTimeoutEnv     = "SUDOKU_ADMISSION_TIMEOUT_MS"
+
+	// PublicKeyEnv carries the realm public key. It is per-realm data, so the
+	// node injects it instead of the template carrying it.
+	PublicKeyEnv = "SUDOKU_PUBLIC_KEY"
 )
 
 var (

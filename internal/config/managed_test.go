@@ -23,7 +23,18 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/SUDOKU-ASCII/sudoku/internal/managed"
 )
+
+// testRealmPublicKey is the value the node injects through the environment.
+const testRealmPublicKey = "b7e1c9d4f2a35c6e8d0b1a2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6a"
+
+// managedServerConfig is a complete managed configuration: the mode, the block
+// and the realm public key the node would inject.
+func managedServerConfig() *Config {
+	return &Config{Mode: "server", Managed: managedConfig(), Key: testRealmPublicKey}
+}
 
 func managedConfig() *ManagedConfig {
 	return &ManagedConfig{
@@ -36,7 +47,7 @@ func managedConfig() *ManagedConfig {
 }
 
 func TestFinalizeManagedAcceptsAValidConfiguration(t *testing.T) {
-	cfg := &Config{Mode: "server", Managed: managedConfig()}
+	cfg := managedServerConfig()
 	if err := cfg.Finalize(); err != nil {
 		t.Fatalf("Finalize() error = %v", err)
 	}
@@ -163,7 +174,7 @@ func TestFinalizeManagedRejectsUnsupportedCombinations(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			cfg := &Config{Mode: "server", Managed: managedConfig()}
+			cfg := managedServerConfig()
 			testCase.mutate(cfg)
 			err := cfg.Finalize()
 			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
@@ -177,7 +188,7 @@ func TestFinalizeManagedAcceptsExplicitTimeouts(t *testing.T) {
 	managed := managedConfig()
 	managed.HookTimeoutMS = 800
 	managed.DrainTimeoutSeconds = 120
-	cfg := &Config{Mode: "server", Managed: managed}
+	cfg := &Config{Mode: "server", Managed: managed, Key: testRealmPublicKey}
 	if err := cfg.Finalize(); err != nil {
 		t.Fatalf("Finalize() error = %v", err)
 	}
@@ -189,7 +200,7 @@ func TestFinalizeManagedAcceptsExplicitTimeouts(t *testing.T) {
 func TestFinalizeManagedTrimsRealmID(t *testing.T) {
 	managed := managedConfig()
 	managed.RealmID = "  realm-a  "
-	cfg := &Config{Mode: "server", Managed: managed}
+	cfg := &Config{Mode: "server", Managed: managed, Key: testRealmPublicKey}
 	if err := cfg.Finalize(); err != nil {
 		t.Fatalf("Finalize() error = %v", err)
 	}
@@ -201,10 +212,8 @@ func TestFinalizeManagedTrimsRealmID(t *testing.T) {
 // An empty reverse block is dropped by the reverse finalizer before managed
 // validation runs, so it must not be reported as a conflict.
 func TestFinalizeManagedToleratesAnEmptyReverseBlock(t *testing.T) {
-	cfg := &Config{
-		Mode: "server", Managed: managedConfig(),
-		Reverse: &ReverseConfig{Listen: " ", Routes: []ReverseRoute{{}}},
-	}
+	cfg := managedServerConfig()
+	cfg.Reverse = &ReverseConfig{Listen: " ", Routes: []ReverseRoute{{}}}
 	if err := cfg.Finalize(); err != nil {
 		t.Fatalf("Finalize() error = %v", err)
 	}
@@ -214,7 +223,7 @@ func TestFinalizeManagedToleratesAnEmptyReverseBlock(t *testing.T) {
 }
 
 func TestFinalizeManagedSurvivesJSONRoundTrip(t *testing.T) {
-	cfg := &Config{Mode: "server", Managed: managedConfig()}
+	cfg := managedServerConfig()
 	if err := cfg.Finalize(); err != nil {
 		t.Fatalf("Finalize() error = %v", err)
 	}
@@ -234,10 +243,9 @@ func TestFinalizeManagedSurvivesJSONRoundTrip(t *testing.T) {
 // tarpit regardless of what the template says.
 func TestFinalizeManagedForcesSilentSuspiciousAction(t *testing.T) {
 	for _, configured := range []string{"fallback", "silent", ""} {
-		cfg := &Config{
-			Mode: "server", Managed: managedConfig(),
-			SuspiciousAction: configured, FallbackAddr: "decoy.example:443",
-		}
+		cfg := managedServerConfig()
+		cfg.SuspiciousAction = configured
+		cfg.FallbackAddr = "decoy.example:443"
 		if err := cfg.Finalize(); err != nil {
 			t.Fatalf("Finalize() error = %v", err)
 		}
@@ -255,5 +263,58 @@ func TestFinalizeWithoutManagedKeepsSuspiciousAction(t *testing.T) {
 	}
 	if cfg.SuspiciousAction != "fallback" {
 		t.Fatalf("suspicious_action = %q, want fallback", cfg.SuspiciousAction)
+	}
+}
+
+// The realm public key is per-realm data, so the node injects it: a template
+// shared by every node cannot carry it.
+func TestFinalizeManagedTakesTheRealmPublicKeyFromTheEnvironment(t *testing.T) {
+	injected := "1f2e3d4c5b6a79880a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071"
+	t.Setenv(managed.PublicKeyEnv, strings.ToUpper(injected))
+
+	cfg := managedServerConfig()
+	cfg.Key = ""
+	if err := cfg.Finalize(); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+	if cfg.Key != injected {
+		t.Fatalf("key = %q, want the injected lower-case public key", cfg.Key)
+	}
+}
+
+// Without the environment the file value is used, which keeps a hand-run core
+// working and makes a missing key an explicit failure.
+func TestFinalizeManagedRequiresARealmPublicKey(t *testing.T) {
+	cfg := managedServerConfig()
+	cfg.Key = ""
+	err := cfg.Finalize()
+	if err == nil || !strings.Contains(err.Error(), managed.PublicKeyEnv) {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+}
+
+func TestFinalizeManagedRejectsAMalformedRealmPublicKey(t *testing.T) {
+	for _, key := range []string{
+		strings.Repeat("ab", 31), // too short
+		strings.Repeat("ab", 33), // too long
+		strings.Repeat("zz", 32), // not hex
+		strings.Repeat("AB", 32), // uppercase is rejected in the file; only the environment is normalized
+	} {
+		cfg := managedServerConfig()
+		cfg.Key = key
+		if err := cfg.Finalize(); err == nil {
+			t.Fatalf("key %q accepted", key)
+		}
+	}
+}
+
+// A client config must keep its own key: only managed server mode validates it.
+func TestFinalizeClientKeyIsUntouchedByManagedValidation(t *testing.T) {
+	cfg := &Config{Mode: "client", Key: "client-side-key", ServerAddress: "example.com:443"}
+	if err := cfg.Finalize(); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+	if cfg.Key != "client-side-key" {
+		t.Fatalf("key = %q", cfg.Key)
 	}
 }
