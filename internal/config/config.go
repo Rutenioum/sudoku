@@ -51,6 +51,12 @@ type Config struct {
 	// user hash matches an entry are accepted.
 	Users []UserConfig `json:"users,omitempty"`
 
+	// Managed switches the server into managed mode: identities come from Central,
+	// every connection needs an admission decision, and payload bytes are
+	// accounted per accepted-time identity. It is mutually exclusive with the
+	// public controller API and with the reverse entry.
+	Managed *ManagedConfig `json:"managed,omitempty"`
+
 	// UsageFile persists users' monthly data usage across restarts; empty keeps it in memory.
 	// The CLI sets it next to the config file, it is never read from JSON.
 	UsageFile string `json:"-"`

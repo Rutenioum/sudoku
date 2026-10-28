@@ -48,6 +48,11 @@ func (c *Config) Finalize() error {
 	if err := c.finalizeExternalController(); err != nil {
 		return err
 	}
+	// Managed mode is validated last: it depends on the finalized reverse and
+	// external_controller settings to detect an unsupported combination.
+	if err := c.finalizeManaged(); err != nil {
+		return err
+	}
 	return c.finalizeUsers()
 }
 

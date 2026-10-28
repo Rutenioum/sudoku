@@ -308,7 +308,23 @@ func (d *uotDestinations) store(key string, ap netip.AddrPort, now time.Time) {
 }
 
 // HandleUoTServer bridges UDP packets over the already-upgraded tunnel connection.
+// UoTCounter receives payload byte counts for one UoT session. Uploads are bytes
+// delivered to the destination; downloads are bytes delivered back to the client.
+// A nil counter disables accounting.
+type UoTCounter interface {
+	AddUpload(uint64)
+	AddDownload(uint64)
+}
+
+// HandleUoTServer runs a UoT session without accounting.
 func HandleUoTServer(conn net.Conn) error {
+	return HandleUoTServerWithCounter(conn, nil)
+}
+
+// HandleUoTServerWithCounter runs a UoT session and reports payload bytes to
+// counter. UoT multiplexes every destination over one UDP socket, so counting is
+// done per datagram at the two points where a payload is actually delivered.
+func HandleUoTServerWithCounter(conn net.Conn, counter UoTCounter) error {
 	pConn, err := net.ListenUDP("udp", nil)
 	if err != nil {
 		return fmt.Errorf("listen udp for uot: %w", err)
@@ -340,6 +356,9 @@ func HandleUoTServer(conn net.Conn) error {
 				closeAll(err)
 				return
 			}
+			if counter != nil {
+				counter.AddDownload(uint64(n))
+			}
 		}
 	}()
 
@@ -360,6 +379,9 @@ func HandleUoTServer(conn net.Conn) error {
 			if _, err := pConn.WriteToUDPAddrPort(payload, ap); err != nil {
 				closeAll(err)
 				return
+			}
+			if counter != nil {
+				counter.AddUpload(uint64(len(payload)))
 			}
 		}
 	}()

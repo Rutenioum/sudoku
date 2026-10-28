@@ -20,13 +20,16 @@ with this application without prior consent.
 package app
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/SUDOKU-ASCII/sudoku/internal/config"
 	"github.com/SUDOKU-ASCII/sudoku/internal/controller"
+	"github.com/SUDOKU-ASCII/sudoku/internal/managed"
 	"github.com/SUDOKU-ASCII/sudoku/internal/protocol"
 	"github.com/SUDOKU-ASCII/sudoku/internal/reverse"
 	"github.com/SUDOKU-ASCII/sudoku/internal/tunnel"
@@ -68,6 +71,34 @@ func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 		}
 		defer stopUsage()
 	}
+
+	// Managed mode replaces the local whitelist entirely: identities arrive from
+	// Central, every connection needs an admission decision, and payload bytes
+	// are billed per accepted-time identity.
+	var mgr *managed.Manager
+	if cfg.Managed != nil {
+		started, err := managed.Start(managed.Options{
+			ControlSocket:   cfg.Managed.ControlSocket,
+			AdmissionSocket: cfg.Managed.AdmissionSocket,
+			RealmID:         cfg.Managed.RealmID,
+			BootIDFile:      cfg.Managed.BootIDFile,
+			HookTimeout:     time.Duration(cfg.Managed.HookTimeoutMS) * time.Millisecond,
+			DrainTimeout:    time.Duration(cfg.Managed.DrainTimeoutSeconds) * time.Second,
+		})
+		if err != nil {
+			logx.Fatalf("Managed", "%v", err)
+		}
+		mgr = started
+		defer func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := mgr.Stop(stopCtx); err != nil {
+				logx.Warnf("Managed", "stop: %v", err)
+			}
+		}()
+		logx.Infof("Managed", "realm %s, boot %s, control %s", cfg.Managed.RealmID, mgr.BootID(), cfg.Managed.ControlSocket)
+	}
+
 	if cfg.ExternalController != "" {
 		stopAPI, err := controller.Start(controller.Options{
 			Addr: cfg.ExternalController, Secret: cfg.Secret, Users: userReg.Stats,
@@ -122,7 +153,7 @@ func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 	}
 
 	serveUntilShutdown("Server", l, func(c net.Conn) {
-		handleServerConn(c, cfg, tables, tunnelSrv, revMgr, userReg)
+		handleServerConn(c, cfg, tables, tunnelSrv, revMgr, userReg, mgr)
 	})
 }
 
@@ -139,7 +170,7 @@ func rejectReason(user *users.User) string {
 	return ""
 }
 
-func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Table, tunnelSrv *httpmask.TunnelServer, revMgr *reverse.Manager, userReg *users.Registry) {
+func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Table, tunnelSrv *httpmask.TunnelServer, revMgr *reverse.Manager, userReg *users.Registry, mgr *managed.Manager) {
 	if tunnelSrv != nil {
 		res, c, err := tunnelSrv.HandleConn(rawConn)
 		if err != nil {
@@ -153,7 +184,7 @@ func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Tab
 		case httpmask.HandleStartTunnel:
 			inner := *cfg
 			inner.HTTPMask.Disable = true
-			handleSudokuServerConn(c, rawConn, &inner, tables, false, revMgr, userReg)
+			handleSudokuServerConn(c, rawConn, &inner, tables, false, revMgr, userReg, mgr)
 			return
 		case httpmask.HandlePassThrough:
 			if r, ok := c.(interface{ IsHTTPMaskRejected() bool }); ok && r.IsHTTPMaskRejected() {
@@ -162,7 +193,7 @@ func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Tab
 				handleSuspicious(c, rawConn, cfg)
 				return
 			}
-			handleSudokuServerConn(c, rawConn, cfg, tables, true, revMgr, userReg)
+			handleSudokuServerConn(c, rawConn, cfg, tables, true, revMgr, userReg, mgr)
 			return
 		default:
 			rawConn.Close()
@@ -170,10 +201,10 @@ func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Tab
 		}
 	}
 
-	handleSudokuServerConn(rawConn, rawConn, cfg, tables, true, revMgr, userReg)
+	handleSudokuServerConn(rawConn, rawConn, cfg, tables, true, revMgr, userReg, mgr)
 }
 
-func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *config.Config, tables []*sudoku.Table, allowFallback bool, revMgr *reverse.Manager, userReg *users.Registry) {
+func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *config.Config, tables []*sudoku.Table, allowFallback bool, revMgr *reverse.Manager, userReg *users.Registry, mgr *managed.Manager) {
 	// Early-handshake conns are already wire-wrapped inside WrapConn; everything else is counted here.
 	var wire *users.WireConn
 	if userReg != nil {
@@ -208,7 +239,29 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 		userHash = meta.UserHash
 	}
 	label := userHash
-	if userReg != nil {
+
+	// session is non-nil only in managed mode. It owns the tunnel conn and the
+	// counter reference, so every exit path below releases both through one defer.
+	var session *managed.Session
+	if mgr != nil {
+		// Admission happens before any KIP byte is read: a denied client must not
+		// reach a session handler, not even to be rejected there.
+		sourceIP, ok := managed.SourceIP(rawConn.RemoteAddr().String())
+		if !ok {
+			logx.Warnf("Managed", "rejecting connection without a usable source address")
+			_ = tunnelConn.Close()
+			return
+		}
+		identity, err := mgr.Admit(context.Background(), userHash, sourceIP)
+		if err != nil {
+			logx.Warnf("Managed", "[User:%s] rejected: %v", userHash, err)
+			_ = tunnelConn.Close()
+			return
+		}
+		session = mgr.OpenSession(identity, sourceIP, tunnelConn)
+		defer func() { _ = session.Close() }()
+		label = strconv.FormatUint(identity.UserID, 10)
+	} else if userReg != nil {
 		user := userReg.Lookup(userHash)
 		if reason := rejectReason(user); reason != "" {
 			// Aliases fall back to the hash, so a private key never reaches the log.
@@ -245,7 +298,13 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 	switch msg.Type {
 	case tunnel.KIPTypeStartUoT:
 		logUserInfo("Server/UoT", label, "session start")
-		if err := tunnel.HandleUoTServer(tunnelConn); err != nil {
+		// UoT multiplexes every destination over one socket, so the counter is
+		// fed per datagram rather than per connection.
+		var counter tunnel.UoTCounter
+		if session != nil {
+			counter = session.Counter()
+		}
+		if err := tunnel.HandleUoTServerWithCounter(tunnelConn, counter); err != nil {
 			logUserWarn("Server/UoT", label, "session end: %v", err)
 		} else {
 			logUserInfo("Server/UoT", label, "session end")
@@ -256,13 +315,31 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 		logConnect := func(addr string) {
 			logUserInfo("Server/Mux", label, "Connecting to %s", addr)
 		}
-		if err := tunnel.HandleMuxServer(tunnelConn, logConnect); err != nil {
+		// Each sub-stream dials its own target, so counting is per stream while
+		// the counter and the lease stay per logical session.
+		dialTarget := func(addr string) (net.Conn, error) {
+			target, err := net.DialTimeout("tcp", addr, 10*time.Second)
+			if err != nil {
+				return nil, err
+			}
+			if session != nil {
+				return session.WrapTarget(target), nil
+			}
+			return target, nil
+		}
+		if err := tunnel.HandleMuxWithDialer(tunnelConn, logConnect, dialTarget); err != nil {
 			logUserWarn("Server/Mux", label, "session end: %v", err)
 		} else {
 			logUserInfo("Server/Mux", label, "session end")
 		}
 		return
 	case tunnel.KIPTypeStartRev:
+		if mgr != nil {
+			// Managed mode refuses the reverse entry at config time; this guard
+			// keeps a hand-crafted config from relaying unbillable traffic.
+			logx.Warnf("Managed", "[User:%s] reverse sessions are not available in managed mode", label)
+			return
+		}
 		if revMgr == nil {
 			logx.Warnf("Server/Reverse", "reverse proxy not enabled (missing reverse.listen)")
 			return
@@ -287,6 +364,9 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 		if err != nil {
 			logx.Warnf("Server", "Connect target failed: %v", err)
 			return
+		}
+		if session != nil {
+			target = session.WrapTarget(target)
 		}
 
 		connutil.PipeConn(tunnelConn, target)
