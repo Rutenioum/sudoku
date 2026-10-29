@@ -259,6 +259,10 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 			return
 		}
 		session = mgr.OpenSession(identity, sourceIP, tunnelConn)
+		if session == nil {
+			_ = tunnelConn.Close()
+			return
+		}
 		defer func() { _ = session.Close() }()
 		label = strconv.FormatUint(identity.UserID, 10)
 	} else if userReg != nil {

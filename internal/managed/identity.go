@@ -60,6 +60,7 @@ type identityTable struct {
 	validUntil int64
 	realmID    string
 	byHash     map[string]Identity
+	counters   *counterTable
 }
 
 func newIdentityTable() *identityTable {
@@ -92,7 +93,13 @@ func (t *identityTable) install(realmID string, revision uint64, validUntil int6
 		byHash[identity.UserHash] = identity
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	var revoked []*Session
+	defer func() {
+		t.mu.Unlock()
+		for _, session := range revoked {
+			_ = session.Close()
+		}
+	}()
 	if t.realmID != "" && t.realmID != realmID {
 		return ErrRealmMismatch
 	}
@@ -103,6 +110,15 @@ func (t *identityTable) install(realmID string, revision uint64, validUntil int6
 	t.revision = revision
 	t.validUntil = validUntil
 	t.byHash = byHash
+	if t.counters != nil {
+		t.counters.mu.Lock()
+		for _, session := range t.counters.sessions {
+			if current, ok := byHash[session.Identity.UserHash]; !ok || current != session.Identity {
+				revoked = append(revoked, session)
+			}
+		}
+		t.counters.mu.Unlock()
+	}
 	return nil
 }
 

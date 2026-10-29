@@ -49,6 +49,11 @@ type Session struct {
 // OpenSession registers a logical session and returns it with its counter. The
 // caller must call Close exactly once; it is safe to call more than once.
 func (m *Manager) OpenSession(identity Identity, sourceIP string, closer io.Closer) *Session {
+	m.table.mu.RLock()
+	defer m.table.mu.RUnlock()
+	if current, ok := m.table.byHash[identity.UserHash]; !ok || current != identity || m.draining.Load() {
+		return nil
+	}
 	return m.counters.openSession(identity, sourceIP, closer)
 }
 

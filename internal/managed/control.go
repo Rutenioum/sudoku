@@ -56,6 +56,7 @@ type controlServer struct {
 }
 
 func newControlServer(socket, token, bootID string, table *identityTable, counters *counterTable, drain func(context.Context) error) *controlServer {
+	table.counters = counters
 	return &controlServer{
 		socket: socket, token: token, bootID: bootID, table: table, counters: counters, drain: drain,
 	}
