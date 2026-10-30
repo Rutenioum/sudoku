@@ -42,8 +42,12 @@ type Session struct {
 	table   *counterTable
 	closer  io.Closer
 
-	once sync.Once
-	err  error
+	once          sync.Once
+	interruptOnce sync.Once
+	targetMu      sync.Mutex
+	targets       map[net.Conn]struct{}
+	interrupted   bool
+	err           error
 }
 
 // OpenSession registers a logical session and returns it with its counter. The
@@ -77,10 +81,32 @@ func (s *Session) Close() error {
 		return nil
 	}
 	s.once.Do(func() {
+		_ = s.Interrupt()
+		s.table.finish(s)
+	})
+	return s.err
+}
+
+// Interrupt requests termination without sealing counters. Only the handler's
+// deferred Close, after relay and counting finish, releases the session.
+func (s *Session) Interrupt() error {
+	if s == nil {
+		return nil
+	}
+	s.interruptOnce.Do(func() {
+		s.targetMu.Lock()
+		s.interrupted = true
+		targets := make([]net.Conn, 0, len(s.targets))
+		for target := range s.targets {
+			targets = append(targets, target)
+		}
+		s.targetMu.Unlock()
 		if s.closer != nil {
 			s.err = s.closer.Close()
 		}
-		s.table.finish(s)
+		for _, target := range targets {
+			_ = target.Close()
+		}
 	})
 	return s.err
 }
@@ -113,7 +139,17 @@ func (s *Session) WrapTarget(conn net.Conn) net.Conn {
 	if s == nil || conn == nil || s.counter == nil {
 		return conn
 	}
-	base := countingConn{Conn: conn, counter: s.counter}
+	s.targetMu.Lock()
+	if s.targets == nil {
+		s.targets = make(map[net.Conn]struct{})
+	}
+	s.targets[conn] = struct{}{}
+	interrupted := s.interrupted
+	s.targetMu.Unlock()
+	if interrupted {
+		_ = conn.Close()
+	}
+	base := countingConn{Conn: conn, counter: s.counter, session: s}
 	if _, ok := conn.(connutil.CloseWriter); ok {
 		return &countingHalfConn{countingConn: base}
 	}
@@ -126,6 +162,15 @@ func (s *Session) WrapTarget(conn net.Conn) net.Conn {
 type countingConn struct {
 	net.Conn
 	counter *Counter
+	session *Session
+}
+
+func (c *countingConn) Close() error {
+	err := c.Conn.Close()
+	c.session.targetMu.Lock()
+	delete(c.session.targets, c.Conn)
+	c.session.targetMu.Unlock()
+	return err
 }
 
 func (c *countingConn) Read(p []byte) (int, error) {

@@ -227,7 +227,7 @@ func (t *counterTable) closeMatching(targets []CloseTarget) int {
 	}
 	t.mu.Unlock()
 	for _, session := range selected {
-		_ = session.Close()
+		_ = session.Interrupt()
 	}
 	return len(selected)
 }

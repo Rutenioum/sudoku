@@ -22,10 +22,70 @@ package managed
 
 import (
 	"io"
+	"net"
 	"testing"
 
 	"github.com/SUDOKU-ASCII/sudoku/pkg/connutil"
 )
+
+type delayedWriteConn struct {
+	*fakeConn
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *delayedWriteConn) Write(p []byte) (int, error) {
+	close(c.started)
+	<-c.release
+	return len(p), nil
+}
+
+func TestInterruptDoesNotSealBeforeFinalWrite(t *testing.T) {
+	rig := newRig(t)
+	identity := rig.installIdentity(t, 1)
+	session := rig.manager.OpenSession(identity, "203.0.113.9", newFakeConn(""))
+	target := &delayedWriteConn{fakeConn: newFakeConn(""), started: make(chan struct{}), release: make(chan struct{})}
+	wrapped := session.WrapTarget(target)
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = wrapped.Write([]byte("tail")) }()
+	<-target.started
+	rig.manager.CloseMatching([]CloseTarget{{CredentialID: identity.CredentialID, UserID: identity.UserID, UUID: identity.UUID}})
+	_, rows, _ := rig.manager.Snapshot()
+	if len(rows) != 1 || rows[0].Sealed {
+		t.Fatal("interruption sealed a still-running handler")
+	}
+	if n := session.table.ack([]string{session.Counter().ID}); n != 0 {
+		t.Fatal("premature ACK deleted live counter")
+	}
+	close(target.release)
+	<-done
+	_ = wrapped.Close()
+	_ = session.Close()
+	_, rows, _ = rig.manager.Snapshot()
+	if len(rows) != 1 || !rows[0].Sealed || rows[0].Upload != 4 {
+		t.Fatalf("final tail missing: %+v", rows)
+	}
+}
+
+func TestInterruptClosesTargetAndLateTarget(t *testing.T) {
+	rig := newRig(t)
+	identity := rig.installIdentity(t, 1)
+	session := rig.manager.OpenSession(identity, "203.0.113.9", newFakeConn(""))
+	defer session.Close()
+	a, b := net.Pipe()
+	defer b.Close()
+	wrapped := session.WrapTarget(a)
+	_ = session.Interrupt()
+	if _, err := wrapped.Write([]byte("x")); err == nil {
+		t.Fatal("target stayed open")
+	}
+	c, d := net.Pipe()
+	defer d.Close()
+	late := session.WrapTarget(c)
+	if _, err := late.Write([]byte("x")); err == nil {
+		t.Fatal("late target stayed open")
+	}
+}
 
 // The counting wrapper must not expose the io.WriterTo / io.ReaderFrom fast
 // paths: connutil.Copy prefers them, and a wrapper that accepted ReadFrom would

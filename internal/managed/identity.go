@@ -97,7 +97,7 @@ func (t *identityTable) install(realmID string, revision uint64, validUntil int6
 	defer func() {
 		t.mu.Unlock()
 		for _, session := range revoked {
-			_ = session.Close()
+			_ = session.Interrupt()
 		}
 	}()
 	if t.realmID != "" && t.realmID != realmID {

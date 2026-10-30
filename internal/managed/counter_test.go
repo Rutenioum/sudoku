@@ -159,6 +159,7 @@ func TestCloseMatchingSelectsByIdentityAndAddress(t *testing.T) {
 	if closed != 1 {
 		t.Fatalf("closed=%d", closed)
 	}
+	_ = first.Close() // Simulate relay completion after interruption.
 	if counters.liveSessions() != 2 {
 		t.Fatalf("live sessions=%d", counters.liveSessions())
 	}
@@ -170,6 +171,7 @@ func TestCloseMatchingSelectsByIdentityAndAddress(t *testing.T) {
 	if closed != 1 {
 		t.Fatalf("closed=%d", closed)
 	}
+	_ = second.Close()
 	if counters.liveSessions() != 1 {
 		t.Fatalf("live sessions=%d", counters.liveSessions())
 	}
